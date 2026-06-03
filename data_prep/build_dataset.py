@@ -42,6 +42,16 @@ def dataset_version_hash(image_keys) -> str:
     return h.hexdigest()[:12]
 
 
+def clean_appledouble(root) -> int:
+    """Delete macOS AppleDouble (._*) sidecar files under root. Returns count removed."""
+    removed = 0
+    for p in Path(root).rglob("._*"):
+        if p.is_file():
+            p.unlink()
+            removed += 1
+    return removed
+
+
 def _save(bgr, path):
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
@@ -139,9 +149,12 @@ def build_subset(subset: str, balance: bool):
     for db in (config.YOLO_DB, config.COCO_DB):
         (db / subset).mkdir(parents=True, exist_ok=True)
         (db / subset / "dataset_meta.json").write_text(json.dumps(meta, indent=2))
+    # self-clean macOS AppleDouble sidecars so future builds leave clean DBs
+    n = clean_appledouble(config.YOLO_DB / subset) + clean_appledouble(config.COCO_DB / subset)
     print(f"[{subset}] {len(items)} images, version {version_hash}")
     print(f"[{subset}] skipped {skipped_dim} images: EXIF/XML dimension mismatch")
     print(f"[{subset}] skipped {skipped_bad_xml} unparseable XML files")
+    print(f"[{subset}] removed {n} AppleDouble sidecar files")
 
 
 def main():

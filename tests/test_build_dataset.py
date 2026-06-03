@@ -12,3 +12,12 @@ def test_version_hash_is_stable_and_order_independent():
     a = dataset_version_hash(["mem2/a.JPG", "mem3/b.JPG"])
     b = dataset_version_hash(["mem3/b.JPG", "mem2/a.JPG"])
     assert a == b and len(a) == 12
+
+def test_clean_appledouble_removes_sidecars(tmp_path):
+    from data_prep.build_dataset import clean_appledouble
+    (tmp_path / "real.jpg").write_bytes(b"x")
+    sub = tmp_path / "images"; sub.mkdir()
+    (sub / "._real.jpg").write_bytes(b"x"); (sub / "real.jpg").write_bytes(b"x")
+    removed = clean_appledouble(tmp_path)
+    assert removed == 1
+    assert (tmp_path / "real.jpg").exists() and not (sub / "._real.jpg").exists()

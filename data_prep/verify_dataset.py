@@ -17,6 +17,27 @@ def class_counts_from_manifest(df: pd.DataFrame) -> dict:
     return df["split"].value_counts().to_dict()
 
 
+def find_invalid_labels(labels_dir) -> list:
+    """Return paths of YOLO label files that are malformed. Skips AppleDouble (._*) sidecars."""
+    bad = []
+    for txt in Path(labels_dir).rglob("*.txt"):
+        if txt.name.startswith("._"):
+            continue
+        ok = True
+        for ln in txt.read_text().splitlines():
+            vals = ln.split()
+            if len(vals) != 5:
+                ok = False; break
+            try:
+                if not all(0.0 <= float(v) <= 1.0 for v in vals[1:]):
+                    ok = False; break
+            except ValueError:
+                ok = False; break
+        if not ok:
+            bad.append(str(txt))
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--subset", choices=["pole", "components"], required=True)
@@ -26,16 +47,7 @@ def main():
     assert_no_group_leakage(df)
     print("OK no leakage. Split sizes:", class_counts_from_manifest(df))
     # box validity: every YOLO label coord in [0,1]
-    for txt in (config.YOLO_DB / args.subset / "labels").rglob("*.txt"):
-        for line in txt.read_text().split():
-            pass  # presence check; full numeric check below
-    bad = []
-    for txt in (config.YOLO_DB / args.subset / "labels").rglob("*.txt"):
-        for ln in txt.read_text().splitlines():
-            vals = ln.split()
-            if len(vals) != 5 or not all(0.0 <= float(v) <= 1.0 for v in vals[1:]):
-                bad.append(str(txt))
-                break
+    bad = find_invalid_labels(config.YOLO_DB / args.subset / "labels")
     assert not bad, f"invalid YOLO labels: {bad[:5]}"
     print("OK all YOLO labels valid.")
 
