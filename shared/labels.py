@@ -63,3 +63,15 @@ def parse_voc(path) -> Annotation:
             continue  # drop degenerate boxes
         boxes.append(Box(name, xmin, ymin, xmax, ymax))
     return Annotation(width, height, boxes)
+
+
+def to_yolo_line(box: Box, img_w: int, img_h: int, class_names: list) -> str:
+    """Format one box as a YOLO label line: '<cls> <xc> <yc> <w> <h>' (normalized)."""
+    if box.name not in class_names:
+        raise ValueError(f"{box.name!r} not in {class_names}")
+    cls = class_names.index(box.name)
+    xc = ((box.xmin + box.xmax) / 2) / img_w
+    yc = ((box.ymin + box.ymax) / 2) / img_h
+    w = (box.xmax - box.xmin) / img_w
+    h = (box.ymax - box.ymin) / img_h
+    return f"{cls} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}"
