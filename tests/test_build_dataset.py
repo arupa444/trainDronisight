@@ -1,4 +1,7 @@
-from data_prep.build_dataset import sample_class_list, dataset_version_hash
+from data_prep.build_dataset import sample_class_list, dataset_version_hash, output_key
+
+def test_output_key_namespaces_by_source():
+    assert output_key("mem3", "DJI_x") == "mem3_DJI_x"
 
 def test_sample_class_list_pole_vs_components():
     from shared import config

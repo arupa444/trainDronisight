@@ -30,6 +30,11 @@ def sample_class_list(subset: str):
     return config.POLE_CLASSES if subset == "pole" else config.COMPONENT_CLASSES
 
 
+def output_key(source: str, stem: str) -> str:
+    """Unique per-image key namespaced by source folder (DJI counters reset per card)."""
+    return f"{source}_{stem}"
+
+
 def dataset_version_hash(image_keys) -> str:
     h = hashlib.sha256()
     for k in sorted(image_keys):
@@ -61,7 +66,9 @@ def build_subset(subset: str, balance: bool):
     for source, names in by_source.items():
         name_to_group.update(assign_groups(names, source, config.GROUP_TIME_GAP_S))
 
-    items = [{"image": img, "name": img.name, "group": name_to_group[img.name],
+    items = [{"image": img, "name": img.name,
+              "key": output_key(parsed[img][0].source, img.stem),
+              "group": name_to_group[img.name],
               "source": parsed[img][0].source,
               "classes": [b.name for b in parsed[img][1].boxes if b.name in class_names]}
              for img in parsed]
@@ -70,32 +77,37 @@ def build_subset(subset: str, balance: bool):
         items = select_balanced(items, class_names, enabled=True, seed=config.SEED)
 
     split = grouped_split(items, config.SPLIT_RATIOS, config.SEED)
-    version_hash = dataset_version_hash([it["name"] for it in items])
+    version_hash = dataset_version_hash([it["key"] for it in items])
 
     # write both DBs
     coco_per_split = {"train": {}, "val": {}, "test": {}}
     manifest_rows = []
+    skipped_dim = 0
     for split_name, split_items in split.items():
         for it in split_items:
             s, ann = parsed[it["image"]]
             bgr = load_oriented_bgr(s.image)
+            h, w = bgr.shape[:2]
+            if (w, h) != (ann.width, ann.height):
+                skipped_dim += 1
+                continue
             prof = profile_array(bgr)
             clip, grid = clahe_params_from_profile(prof)
             clahe_img = apply_clahe(bgr, clip, grid)
 
-            stem = it["image"].stem
+            key = output_key(it["source"], it["image"].stem)
             for db_root in (config.YOLO_DB, config.COCO_DB):
                 base = db_root / subset / "images" / split_name
-                _save(bgr, base / "orig" / f"{stem}.jpg")
-                _save(clahe_img, base / "clahe" / f"{stem}.jpg")
+                _save(bgr, base / "orig" / f"{key}.jpg")
+                _save(clahe_img, base / "clahe" / f"{key}.jpg")
 
             # YOLO labels (shared by orig/clahe)
-            lbl = config.YOLO_DB / subset / "labels" / split_name / f"{stem}.txt"
+            lbl = config.YOLO_DB / subset / "labels" / split_name / f"{key}.txt"
             lbl.parent.mkdir(parents=True, exist_ok=True)
             write_label_file(lbl, ann.boxes, ann.width, ann.height, class_names)
 
-            coco_per_split[split_name][f"{stem}.jpg"] = ann
-            manifest_rows.append({"name": it["name"], "source": it["source"],
+            coco_per_split[split_name][f"{key}.jpg"] = ann
+            manifest_rows.append({"name": key, "source": it["source"],
                                   "group": it["group"], "split": split_name,
                                   "subset": subset, **prof, "clahe_clip": clip})
 
@@ -114,7 +126,7 @@ def build_subset(subset: str, balance: bool):
     (config.YOLO_DB / subset).mkdir(parents=True, exist_ok=True)
     df.to_csv(config.YOLO_DB / subset / "manifest.csv", index=False)
     weights = sample_weights(items, class_names)
-    pd.DataFrame({"name": [it["name"] for it in items], "weight": weights}) \
+    pd.DataFrame({"name": [it["key"] for it in items], "weight": weights}) \
         .to_csv(config.YOLO_DB / subset / "sample_weights.csv", index=False)
     meta = {"subset": subset, "version_hash": version_hash,
             "n_images": len(items), "balanced": bool(balance and config.BALANCE_CAP_ENABLED),
@@ -123,6 +135,7 @@ def build_subset(subset: str, balance: bool):
         (db / subset).mkdir(parents=True, exist_ok=True)
         (db / subset / "dataset_meta.json").write_text(json.dumps(meta, indent=2))
     print(f"[{subset}] {len(items)} images, version {version_hash}")
+    print(f"[{subset}] skipped {skipped_dim} images: EXIF/XML dimension mismatch")
 
 
 def main():
