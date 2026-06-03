@@ -20,3 +20,46 @@ def normalize_class_name(raw: str):
         return None
     key = raw.strip().lower()
     return _CANONICAL.get(key)
+
+
+from dataclasses import dataclass
+from pathlib import Path
+from xml.etree import ElementTree as ET
+
+
+@dataclass
+class Box:
+    name: str
+    xmin: int
+    ymin: int
+    xmax: int
+    ymax: int
+
+
+@dataclass
+class Annotation:
+    width: int
+    height: int
+    boxes: list  # list[Box]
+
+
+def parse_voc(path) -> Annotation:
+    """Parse a VOC XML, normalizing names and dropping excluded/invalid boxes."""
+    root = ET.parse(str(path)).getroot()
+    size = root.find("size")
+    width = int(size.findtext("width"))
+    height = int(size.findtext("height"))
+    boxes = []
+    for obj in root.findall("object"):
+        name = normalize_class_name(obj.findtext("name"))
+        if name is None:
+            continue
+        bb = obj.find("bndbox")
+        xmin = int(float(bb.findtext("xmin")))
+        ymin = int(float(bb.findtext("ymin")))
+        xmax = int(float(bb.findtext("xmax")))
+        ymax = int(float(bb.findtext("ymax")))
+        if xmax <= xmin or ymax <= ymin:
+            continue  # drop degenerate boxes
+        boxes.append(Box(name, xmin, ymin, xmax, ymax))
+    return Annotation(width, height, boxes)
