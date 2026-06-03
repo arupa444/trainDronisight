@@ -8,7 +8,6 @@ Usage:
 import argparse
 import hashlib
 import json
-import shutil
 from pathlib import Path
 
 import cv2
@@ -19,7 +18,7 @@ from shared.labels import parse_voc
 from data_prep.collect import collect_samples
 from data_prep.grouping import assign_groups
 from data_prep.split import grouped_split
-from data_prep.balance import select_balanced, sample_weights, cap_target
+from data_prep.balance import select_balanced, sample_weights
 from data_prep.profile_images import profile_array
 from data_prep.preprocess import load_oriented_bgr, clahe_params_from_profile, apply_clahe
 from data_prep.emit_yolo import write_label_file, write_data_yaml

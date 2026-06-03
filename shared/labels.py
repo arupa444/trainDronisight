@@ -23,7 +23,6 @@ def normalize_class_name(raw: str):
 
 
 from dataclasses import dataclass
-from pathlib import Path
 from xml.etree import ElementTree as ET
 
 

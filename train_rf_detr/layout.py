@@ -19,6 +19,8 @@ def build_rfdetr_view(subset_db: Path, version: str, dest: Path) -> Path:
         shutil.copy(ann, out_dir / "_annotations.coco.json")
         img_src = subset_db / "images" / split / version
         for img in img_src.glob("*.jpg"):
+            if img.name.startswith("._"):
+                continue
             link = out_dir / img.name
             if not link.exists():
                 os.symlink(img.resolve(), link)
