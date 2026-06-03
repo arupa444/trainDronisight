@@ -21,13 +21,14 @@ dependencies = [
     "rfdetr>=1.0",
     "pycocotools>=2.0.7",
     "albumentations>=1.4",
+    "nbformat>=5.10",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
 [tool.setuptools]
-packages = ["shared", "data_prep", "train_yolo", "train_faster_rcnn", "train_rf_detr", "inference"]
+packages = ["shared", "data_prep", "train_yolo", "train_faster_rcnn", "train_rf_detr", "inference", "notebooks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
