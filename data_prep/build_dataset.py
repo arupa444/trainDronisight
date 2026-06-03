@@ -53,8 +53,13 @@ def build_subset(subset: str, balance: bool):
 
     # parse + keep only images that contain >=1 class for this subset
     parsed = {}
+    skipped_bad_xml = 0
     for s in samples:
-        ann = parse_voc(s.xml)
+        try:
+            ann = parse_voc(s.xml)
+        except Exception:
+            skipped_bad_xml += 1
+            continue
         if any(b.name in class_names for b in ann.boxes):
             parsed[s.image] = (s, ann)
 
@@ -136,6 +141,7 @@ def build_subset(subset: str, balance: bool):
         (db / subset / "dataset_meta.json").write_text(json.dumps(meta, indent=2))
     print(f"[{subset}] {len(items)} images, version {version_hash}")
     print(f"[{subset}] skipped {skipped_dim} images: EXIF/XML dimension mismatch")
+    print(f"[{subset}] skipped {skipped_bad_xml} unparseable XML files")
 
 
 def main():

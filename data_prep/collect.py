@@ -17,6 +17,8 @@ def collect_samples(source_dirs) -> list:
         if not d.is_dir():
             continue
         for img in sorted(d.iterdir()):
+            if img.name.startswith("._"):  # macOS AppleDouble sidecar, not real data
+                continue
             if img.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
                 continue
             xml = img.with_suffix(".xml")
