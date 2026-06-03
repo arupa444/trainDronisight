@@ -27,7 +27,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [tool.setuptools]
-packages = ["shared", "data_prep"]
+packages = ["shared", "data_prep", "train_yolo", "train_faster_rcnn", "train_rf_detr", "inference"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
