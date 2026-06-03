@@ -44,9 +44,9 @@ NOTEBOOKS = {
     ],
     "04_inference_pipeline": _SETUP + [
         "# point these at trained weights (on Drive or in runs/)\n"
-        "import glob\n"
-        "POLE=sorted(glob.glob('runs/pole/yolo*/weights/best.pt'))[-1]\n"
-        "COMP=sorted(glob.glob('runs/components/yolo*/weights/best.pt'))[-1]\nprint(POLE, COMP)",
+        "import glob, os\n"
+        "POLE=max(glob.glob('runs/pole/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
+        "COMP=max(glob.glob('runs/components/yolo*/weights/best.pt'), key=os.path.getmtime)\nprint(POLE, COMP)",
         "import glob\nIMG=sorted(glob.glob('/content/data/yolo_train_db/components/images/test/orig/*.jpg'))[0]\nprint(IMG)",
         "!python -m inference.pipeline --image \"$IMG\" --pole-weights $POLE --comp-weights $COMP --out /content/result.json",
         "import json; print(json.dumps(json.load(open('/content/result.json')), indent=2))",
