@@ -22,12 +22,12 @@ def _save_crop(crop, crop_dir, name):
     return str(path)
 
 
-def run_pipeline(image, pole_detector, comp_detector, crop_dir, image_name):
+def run_pipeline(image, pole_detector, comp_detector, crop_dir, image_name, pole_pad=0.05):
     """image: BGR ndarray. Returns the structured result dict."""
     stem = Path(image_name).stem
     result = {"image": image_name, "poles": []}
     for pi, pole in enumerate(pole_detector.predict(image)):
-        pole_crop, (ox, oy) = crop_with_pad(image, pole.box, pad_frac=0.0)
+        pole_crop, (ox, oy) = crop_with_pad(image, pole.box, pad_frac=pole_pad)
         pole_crop_path = _save_crop(pole_crop, crop_dir, f"{stem}_pole{pi}.jpg")
         components = []
         for ci, comp in enumerate(comp_detector.predict(pole_crop)):
@@ -57,11 +57,12 @@ def main():
     ap.add_argument("--comp-weights", required=True)
     ap.add_argument("--crop-dir", default="runs/inference/crops")
     ap.add_argument("--out", default="runs/inference/result.json")
+    ap.add_argument("--pole-pad", type=float, default=0.05)
     a = ap.parse_args()
     image = cv2.imread(a.image)
     pole_det = YoloDetector(a.pole_weights)
     comp_det = YoloDetector(a.comp_weights)
-    result = run_pipeline(image, pole_det, comp_det, a.crop_dir, Path(a.image).name)
+    result = run_pipeline(image, pole_det, comp_det, a.crop_dir, Path(a.image).name, pole_pad=a.pole_pad)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))

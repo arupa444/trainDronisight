@@ -12,7 +12,8 @@ def test_pipeline_structures_poles_and_components(tmp_path):
     pole_det = _Fake([Detection("pole", 0.95, (10, 10, 110, 160))])
     # component is in CROP coords (relative to the 100x150 pole crop)
     comp_det = _Fake([Detection("wire", 0.8, (5, 5, 25, 25))])
-    out = run_pipeline(img, pole_det, comp_det, crop_dir=tmp_path, image_name="x.jpg")
+    # Production default is pole_pad=0.05; pin 0.0 here to keep the offset arithmetic exact.
+    out = run_pipeline(img, pole_det, comp_det, crop_dir=tmp_path, image_name="x.jpg", pole_pad=0.0)
     assert len(out["poles"]) == 1
     pole = out["poles"][0]
     assert pole["confidence"] == 0.95

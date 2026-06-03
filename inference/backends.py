@@ -97,7 +97,6 @@ class RFDetrDetector:
         self.conf = conf
 
     def predict(self, image) -> list:
-        import supervision as sv  # rfdetr returns sv.Detections
         det = self.model.predict(image, threshold=self.conf)
         results = []
         for xyxy, conf, cls_id in zip(det.xyxy, det.confidence, det.class_id):
