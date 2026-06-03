@@ -52,25 +52,66 @@ Three model families are built so they can be compared, with **YOLO26x as primar
 - **Model 1 (pole):** `pole`
 - **Model 2 (components):** `wire`, `h_insulator`, `v_insulator`, `crossarm_stright`
 - **"Stable frequency" balancing (cap ON by default):** cap = lowest kept count in the set
-  (components ≈ 1661). Over-represented classes are reduced toward the cap via **greedy image selection**
-  (prefer images carrying under-represented kept classes; stop adding images that only feed already-capped classes).
-  Configurable; disable with one flag. Caveat documented: capping discards real images.
+  (components ≈ 1661). Over-represented classes are reduced toward the cap via **greedy image selection** that
+  **maximizes retained instances of the scarcest classes first** (sort images by rarity-weighted contribution;
+  admit until each class reaches the cap; never drop an image while it still feeds an under-cap class).
+  Configurable; disable with one flag.
+  - **Data-science caveat (documented in-code):** instance-capping by dropping images discards real, informative
+    backgrounds and co-occurring objects, and cannot perfectly equalize because classes co-occur in the same image.
+    The balanced set is therefore the **default training set**, but data-prep *also* emits the **full uncapped set**
+    and a **per-image inverse-frequency sampling weight** manifest, so the alternative (train on all data + weighted
+    sampling / loss) can be run without re-prepping. Both are evaluated; the better val mAP wins.
 
 ---
 
-## 3. Image preprocessing (CV analysis)
+## 3. Image preprocessing (CV-scientist methodology)
 
-**Observed:** strong backlighting / blown-out sky with dark, silhouetted metal hardware (high dynamic range);
-thin high-frequency structures (wires, insulator pins).
+### 3.1 Diagnosis (what the imagery actually is)
+- **High-dynamic-range backlighting:** bright/over-exposed sky against dark, silhouetted metal hardware. The
+  detector's signal (insulator sheds, crossarm edges, wire crimps) sits in the **crushed shadow** region.
+- **Thin, high-frequency targets:** wires and insulator pins are 1–3 px wide at native scale and are the first
+  thing destroyed by downscaling, blur, or aggressive denoise.
+- **JPEG-compressed 12 MP:** 8×8 DCT blocking + chroma subsampling artifacts, worst in flat sky regions —
+  any contrast stretch will **amplify these artifacts** if applied blindly.
+- **Mixed sensors** (`4032×3024`, `4096×3072`) and **DJI EXIF orientation** tags that must be honored before
+  reading boxes (otherwise labels misalign).
 
-**Approach:**
-- An automated **exposure-profiling pass** computes per-image brightness + highlight/shadow-clipping histograms
-  over the dataset and reports stats (drives default params; surfaces outliers).
-- **Default preprocessing: CLAHE on the luminance (L) channel** (LAB space) to recover detail in dark hardware,
-  plus optional gamma from the profile. Resolution normalization handled at train time via letterbox.
-- **Both image versions are stored** in each DB: `orig/` and `clahe/`, with matching configs, so CLAHE can be A/B tested.
-  Bounding boxes are identical between versions (only pixels differ).
-- Train large: `imgsz ≥ 1280` to preserve thin wires / small insulators.
+### 3.2 Principle: enhance for recoverability, not aesthetics
+The pretrained backbones (COCO/ImageNet stats) expect roughly natural image statistics. Heavy global enhancement
+shifts the input distribution away from what the backbone learned and **can lower mAP even when images "look"
+better to a human.** Therefore preprocessing is **mild, local, and empirically validated** — and we always keep
+the untouched `orig/` version as the control. The enhancement track is treated as a **hypothesis to be tested**
+(per-class AP, `clahe` vs `orig`), not a foregone conclusion.
+
+### 3.3 Profiling pass (drives everything, per-image)
+`profile_images.py` computes and persists, per image:
+- Luminance (LAB-L) **histogram**, mean/median, std (global contrast).
+- **Highlight-clip fraction** (pixels ≥ 250) and **shadow-clip fraction** (pixels ≤ 5).
+- **Backlit score** = highlight-clip% combined with low shadow-region contrast (identifies the silhouette images).
+- Estimated **haze/veiling-light** (dark-channel prior statistic).
+- Sharpness proxy (variance of Laplacian) to flag motion-blurred frames.
+Output: a dataset-level report + per-image params, plus a flag list (severely backlit / hazy / blurry outliers).
+
+### 3.4 The `clahe` enhancement track (adaptive, not blanket)
+Applied in **LAB**, on the **L channel only** (chroma untouched → no color casts), then back to RGB:
+1. **Adaptive CLAHE** — `clipLimit` and `tileGridSize` chosen *per image from the profile* (stronger only on
+   genuinely backlit frames; near-identity on already well-exposed frames like the building shot). Defaults to
+   `clipLimit≈2.0`, `tileGridSize=8×8`; capped to avoid sky-noise blow-up.
+2. **Mild gamma** (<1 to lift shadows) only when shadow-clip% is high.
+3. **Optional dark-channel dehaze** only for frames the profile flags as hazy.
+4. **No global histogram equalization, no denoise, no strong sharpening** near native scale — these erase wires.
+   A *light* unsharp mask is allowed only if the profile shows the frame is soft.
+All steps are **parameterized and logged per image** so the dataset is reproducible.
+
+### 3.5 What is NOT baked in (left to the model's own pipeline)
+- **Resize/letterbox** (aspect-preserving, pad value 114) and **per-channel normalization** are done by the
+  training framework — never pre-baked, to avoid double-normalization and to keep `imgsz` a free hyperparameter.
+- Train large: **`imgsz ≥ 1280`** (ablate 1280 vs 1536) to keep thin wires alive.
+
+### 3.6 Storage
+Both versions stored per DB (`orig/`, `clahe/`) with identical boxes; the `clahe` params manifest is saved so any
+image can be regenerated. **Inference must apply the exact same profiling+CLAHE transform** when the `clahe` model
+is used — the transform is shared code (`data_prep/preprocess.py`), not duplicated.
 
 ---
 
@@ -156,16 +197,55 @@ trainDronisight/
 
 ---
 
-## 6. M4 Pro utilization (sustainable, not "100% = throttling")
-- `device="mps"`; dataset caching where it fits in 24 GB; tuned `batch`/`imgsz`; AMP; `workers` set for M4 cores.
-- Keep plugged in, disable low-power mode. Goal = fastest *correct* training, not max GPU%.
-- For RF-DETR (and heavy Faster R-CNN runs), prefer the Colab CUDA notebooks.
+## 6. Training methodology (ML-scientist)
+
+### 6.1 The two-stage train/inference domain gap (critical)
+Model 2 is **trained on full frames** but **runs on cropped pole regions** at inference → a scale/context shift
+that silently tanks recall if ignored. Mitigation baked into Model-2 training:
+- **Scale-jitter / random-resized-crop augmentation** that simulates the zoomed-in cropped distribution
+  (large `scale` range; crops centered on annotated objects), so the model sees both full-frame and crop-like scales.
+- **Multi-scale training** (vary `imgsz`) for the same reason.
+- **Pipeline-level eval (§6.5)** measures the real end-to-end number, not just the per-model full-frame mAP.
+
+### 6.2 Transfer learning & schedule
+- Start from **COCO-pretrained** weights (all three families). Optional brief **backbone freeze + warmup**, then
+  full fine-tune. **Cosine LR** with linear warmup; **early stopping** on val mAP (`patience`).
+- **AMP** on; **fixed seeds** + logged configs for reproducibility; deterministic ops where the backend allows.
+- Batch size set **manually per backend** (MPS auto-batch is unreliable); start conservative for 24 GB and scale up.
+
+### 6.3 Domain-appropriate augmentation (and what to avoid)
+- **Use:** HSV jitter (outdoor lighting variance), horizontal flip, scale/translate, mild rotation (±10°),
+  mosaic for small-object density, **copy-paste** to help the scarcer kept classes; `close_mosaic` for the final
+  epochs so the model finishes on realistic full images.
+- **Avoid / limit:** vertical flip and large rotations (poles/insulators have a strong up-down orientation prior),
+  heavy blur/noise (kills thin wires), extreme color distortion (rust/metal cues are color-dependent).
+
+### 6.4 Imbalance handling at train time (in addition to §2.3 capping)
+- Even with capping, residual skew exists → enable **inverse-frequency / focal-style loss weighting** where the
+  framework supports it, and report **per-class AP** every eval (never hide behind a single mAP).
+
+### 6.5 Evaluation protocol (data integrity first)
+- **Grouped split (§4)** prevents near-duplicate leakage; `verify_dataset` asserts **no capture-group spans two splits**.
+- Primary metrics: **mAP@0.5** and **mAP@0.5:0.95**, plus **per-class AP**, PR curves, confusion matrix.
+- **Test set touched once**, at the end. Confidence threshold for the pipeline is **tuned on val**, then frozen.
+- **End-to-end pipeline metric:** evaluate `pole→crop→components` jointly (does cropping help/hurt component recall
+  vs running Model 2 on the full frame?) — this decides whether the two-stage crop is actually worth it.
+- Track runs (Ultralytics `runs/` + a CSV manifest; W&B optional). Each run records the **dataset version hash**
+  (so results are tied to an exact, regenerable dataset state).
+
+### 6.6 M4 Pro utilization (sustainable, not "100% = throttling")
+- `device="mps"`; cache dataset to RAM where it fits in 24 GB (else `cache="disk"`); tuned `batch`/`imgsz`; AMP;
+  `workers` matched to M4 cores. Keep plugged in, disable low-power mode. Goal = fastest *correct* training, not max GPU%.
+- **RF-DETR-L and heavy Faster R-CNN runs → use the Colab CUDA notebooks** (DETR training is impractical on MPS).
+  YOLO26x is the one that genuinely belongs on the M4.
 
 ---
 
 ## 7. Dependencies (via `uv`, inside an activated `.venv`)
 `ultralytics` (YOLO26), `torch`/`torchvision` (MPS + CUDA builds), `rfdetr`, `pycocotools`, `opencv-python`,
-`numpy`, `pillow`, `lxml`, `pyyaml`, `tqdm`. (Exact pins resolved in the implementation plan.)
+`albumentations` (scale-jitter/copy-paste-style aug for the FRCNN/RF-DETR pipelines), `scikit-learn` (grouped/
+stratified split), `pandas` (image-profile + dataset-version manifests), `numpy`, `pillow`, `lxml`, `pyyaml`,
+`tqdm`. (Exact pins resolved in the implementation plan.) Installed via `uv pip install` inside an activated `.venv`.
 
 ---
 
