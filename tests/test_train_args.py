@@ -22,3 +22,19 @@ def test_close_mosaic_and_seed_set():
     a = build_yolo_args("pole", "/p.yaml", "cpu", 100, 1280, 4)
     assert a["close_mosaic"] >= 10
     assert "seed" in a
+
+def test_explicit_regularization_present():
+    a = build_yolo_args("components", "/c.yaml", "cpu", 10, 1280, 4)
+    assert a["weight_decay"] == 0.0005   # L2
+    assert a["dropout"] > 0              # head dropout
+    assert a["patience"] >= 1            # early stopping
+
+def test_label_smoothing_and_mixup_only_for_multiclass():
+    pole = build_yolo_args("pole", "/p.yaml", "cpu", 10, 640, 4)
+    comp = build_yolo_args("components", "/c.yaml", "cpu", 10, 1280, 4)
+    # label smoothing is degenerate with a single class -> off for pole, on for components
+    assert pole["label_smoothing"] == 0.0
+    assert comp["label_smoothing"] > 0.0
+    # mixup: extra regularizer reserved for the harder 4-class task
+    assert pole["mixup"] == 0.0
+    assert comp["mixup"] > 0.0
