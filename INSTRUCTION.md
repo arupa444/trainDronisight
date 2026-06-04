@@ -106,21 +106,26 @@ Each run self-cleans AppleDouble sidecars and prints split sizes + any skipped (
 ## 6. Train Model 1 — pole detector (YOLO26x, MPS)
 
 ```bash
-python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 1280 --batch 4
+python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 640 --batch 4
 ```
 - `--version {orig,clahe}` — which image variant to train on (train both, compare).
+- `--model` — preferred weights (default `yolo26x.pt`). Use `--model yolo26m.pt` (or `yolo26l.pt`) if `yolo26x` runs out of MPS memory; for a 1-class, big-object task on ~1000 images the medium model is faster and generalizes just as well.
+- **`imgsz 640` is deliberate:** poles fill most of the frame, so 640 detects them fine and uses ~¼ the memory of 1280. (Save the high res for the *component* model.)
 - It prints whether it's using **`yolo26x`** or fell back to **`yolo11x`** (fallback is normal if YOLO26 weights aren't fetchable on your Ultralytics version — not an error).
 - **Output:** `runs/pole/yolo/weights/best.pt` (and `last.pt`). Re-runs go to `runs/pole/yolo2/…`.
+- **Sanity check the scan line:** it must say `<N> images, 0 backgrounds` (e.g. `743 images`). If it says `0 images, 743 backgrounds`, labels aren't being found — see Troubleshooting.
 
-**Batch sizing for 24 GB (important):** the `x` models are large. Start at `--batch 4 --imgsz 1280`. If you hit an MPS out-of-memory error, drop to `--batch 2`, or lower `--imgsz` to 1024/960. If memory is comfortable and the GPU isn't saturated, try `--batch 8`. (The CLI default is 8 — lower it if you OOM.)
+**MPS OOM?** lower `--batch` (4→2), lower `--imgsz`, or switch `--model yolo26m.pt`.
 
 ## 7. Train Model 2 — component detector
 
 ```bash
-python -m train_yolo.train_components --version clahe --epochs 150 --imgsz 1280 --batch 4
+python -m train_yolo.train_components --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
 ```
+- **Keep `imgsz 1280`** here — components include thin wires that vanish at low res.
+- **`yolo26x` at 1280 will likely OOM on 24 GB** → use `--model yolo26m.pt` (recommended) or `yolo26l.pt`, and/or `--batch 2`.
 - **Output:** `runs/components/yolo/weights/best.pt`.
-- More epochs than pole (4 classes, harder).
+- More epochs than pole (4 classes, harder). Again confirm the scan shows `<N> images, 0 backgrounds`.
 - **Class imbalance:** the default DB is instance-capped but co-occurrence leaves `wire` ≫ `crossarm_stright`. Two levers if `crossarm_stright`/recall lags:
   1. Rebuild with `--no-balance` and use `<DB>/components/sample_weights.csv` for inverse-frequency weighted sampling.
   2. Check **per-class AP** in the run's results (don't trust the single mAP) — Ultralytics writes a `results.csv` and PR curves under the run dir.
@@ -229,7 +234,8 @@ python -m inference.pipeline \
 
 | Symptom | Cause / Fix |
 |---|---|
-| `MPS backend out of memory` | Lower `--batch` (8→4→2) and/or `--imgsz` (1280→1024→960). Close other apps. |
+| Scan says **`0 images, N backgrounds`** / "Labels are missing or empty" | YOLO can't find the labels: they must mirror the image variant dir (`labels/<split>/<orig\|clahe>/`). **Fixed in current code** — `git pull` and rebuild, **or** patch existing data in place: see snippet below this table. Always `find <DB> -name '*.cache' -delete` afterward (a poisoned cache reports 0 labels even after fixing). |
+| `MPS backend out of memory` | Lower `--batch` (4→2), lower `--imgsz`, or use a lighter `--model yolo26m.pt`. Close other apps. Keep plugged in. |
 | Training is on CPU, not GPU | `torch.backends.mps.is_available()` is False → reinstall torch ≥ 2.2 in the venv (`uv pip install -e ".[dev]"`). |
 | "using yolo11x fallback weights" warning | Expected if YOLO26 weights aren't fetchable on your Ultralytics version. Harmless; update `ultralytics` if you specifically want YOLO26. |
 | Errors reading `._*.jpg` / weird image counts | exFAT AppleDouble sidecars. Re-copy with `rsync --exclude '._*'`, or `find <DB> -name '._*' -delete`. The pipeline filters them, but clean data is best. |
@@ -237,6 +243,18 @@ python -m inference.pipeline \
 | First Faster R-CNN run stalls | It's downloading COCO-pretrained weights (~160 MB). Needs network; cached after. |
 | `FileNotFoundError` on a DB path | `DRONISIGHT_DATA` isn't set/exported, or points at the wrong folder. `echo $DRONISIGHT_DATA` and re-check Section 3. |
 | RF-DETR painfully slow / unstable on MPS | Expected — use the Colab GPU notebook (Section 10). |
+
+**Patch already-built data in place** (if you copied DBs built before the label-layout fix — no rebuild needed):
+```bash
+DB=/Volumes/dronisight/yolo_train_db          # or $DRONISIGHT_DATA/yolo_train_db
+for sub in pole components; do
+  for split in train val test; do
+    s="$DB/$sub/labels/$split"
+    for v in orig clahe; do mkdir -p "$s/$v"; cp "$s"/*.txt "$s/$v"/ 2>/dev/null; done
+  done
+done
+find "$DB" -name "*.cache" -delete
+```
 
 ---
 

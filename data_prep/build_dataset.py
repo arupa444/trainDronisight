@@ -34,6 +34,18 @@ def output_key(source: str, stem: str) -> str:
     return f"{source}_{stem}"
 
 
+def yolo_label_paths(subset: str, split: str, key: str):
+    """YOLO label paths that MIRROR the image variant dirs (labels/<split>/<orig|clahe>/).
+
+    Ultralytics resolves an image's label by substituting the last '/images/' with
+    '/labels/' in its path, so labels must live under the same <split>/<variant>
+    nesting as the images. Boxes are identical across orig/clahe, so the same label
+    is written into both variant dirs.
+    """
+    return [config.YOLO_DB / subset / "labels" / split / v / f"{key}.txt"
+            for v in ("orig", "clahe")]
+
+
 def dataset_version_hash(image_keys) -> str:
     h = hashlib.sha256()
     for k in sorted(image_keys):
@@ -115,10 +127,11 @@ def build_subset(subset: str, balance: bool):
                 _save(bgr, base / "orig" / f"{key}.jpg")
                 _save(clahe_img, base / "clahe" / f"{key}.jpg")
 
-            # YOLO labels (shared by orig/clahe)
-            lbl = config.YOLO_DB / subset / "labels" / split_name / f"{key}.txt"
-            lbl.parent.mkdir(parents=True, exist_ok=True)
-            write_label_file(lbl, ann.boxes, ann.width, ann.height, class_names)
+            # YOLO labels: mirror the image variant dirs so Ultralytics' images->labels
+            # path mapping resolves (boxes are identical across orig/clahe).
+            for lbl in yolo_label_paths(subset, split_name, key):
+                lbl.parent.mkdir(parents=True, exist_ok=True)
+                write_label_file(lbl, ann.boxes, ann.width, ann.height, class_names)
 
             coco_per_split[split_name][f"{key}.jpg"] = ann
             manifest_rows.append({"name": key, "source": it["source"],
