@@ -235,6 +235,7 @@ python -m inference.pipeline \
 | Symptom | Cause / Fix |
 |---|---|
 | Scan says **`0 images, N backgrounds`** / "Labels are missing or empty" | YOLO can't find the labels: they must mirror the image variant dir (`labels/<split>/<orig\|clahe>/`). **Fixed in current code** — `git pull` and rebuild, **or** patch existing data in place: see snippet below this table. Always `find <DB> -name '*.cache' -delete` afterward (a poisoned cache reports 0 labels even after fixing). |
+| Training **scans a different path** than your data (e.g. reads `/Volumes/dronisight/…` even with `DRONISIGHT_DATA` set) | The `data.yaml` has an absolute `path:` baked in at build time. **Fixed in current code** — the trainer regenerates the yaml to the current DB location on each run. `git pull`, then `find "$DRONISIGHT_DATA/yolo_train_db" -name '*.cache' -delete` and re-run. |
 | `MPS backend out of memory` | Lower `--batch` (4→2), lower `--imgsz`, or use a lighter `--model yolo26m.pt`. Close other apps. Keep plugged in. |
 | Training is on CPU, not GPU | `torch.backends.mps.is_available()` is False → reinstall torch ≥ 2.2 in the venv (`uv pip install -e ".[dev]"`). |
 | "using yolo11x fallback weights" warning | Expected if YOLO26 weights aren't fetchable on your Ultralytics version. Harmless; update `ultralytics` if you specifically want YOLO26. |

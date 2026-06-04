@@ -9,6 +9,7 @@ from shared import config
 from shared.device import select_device
 from shared.train_args import build_yolo_args
 from train_yolo.weights import resolve_weights
+from data_prep.emit_yolo import write_data_yaml
 
 
 def run(version, epochs, imgsz, batch, model="yolo26x.pt"):
@@ -16,7 +17,12 @@ def run(version, epochs, imgsz, batch, model="yolo26x.pt"):
     if fell_back:
         print("WARNING: using yolo11x fallback weights.")
     device = select_device()
-    data_yaml = str(config.YOLO_DB / "pole" / f"data_{version}.yaml")
+    data_dir = config.YOLO_DB / "pole"
+    # Regenerate data.yaml so its `path:` points at the CURRENT DB location. The yaml
+    # written at build time hard-codes the build machine's absolute path (e.g. the SSD
+    # mount), which breaks after copying the DB elsewhere. This makes it portable.
+    data_yaml = (write_data_yaml(data_dir, version, config.POLE_CLASSES)
+                 if data_dir.is_dir() else str(data_dir / f"data_{version}.yaml"))
     args = build_yolo_args("pole", data_yaml, device, epochs, imgsz, batch)
     yolo = YOLO(weights)
     return yolo.train(**args)
