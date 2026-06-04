@@ -1,9 +1,12 @@
+import os
 from pathlib import Path
 
 SEED = 1337
 
-# Source data (never modified)
-SSD_ROOT = Path("/Volumes/dronisight")
+# Root holding the source data and/or the built DBs.
+# Override with the DRONISIGHT_DATA env var (e.g. when training on the M4 from a
+# local copy of the DBs); defaults to the external SSD mount used during data-prep.
+SSD_ROOT = Path(os.environ.get("DRONISIGHT_DATA", "/Volumes/dronisight"))
 SOURCE_DIRS = [SSD_ROOT / f"mem{i}" for i in range(2, 9)]  # mem1 has no labels
 
 # Output DBs
