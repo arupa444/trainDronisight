@@ -29,12 +29,14 @@ def test_explicit_regularization_present():
     assert a["dropout"] > 0              # head dropout
     assert a["patience"] >= 1            # early stopping
 
-def test_label_smoothing_and_mixup_only_for_multiclass():
+def test_mixup_only_for_multiclass():
     pole = build_yolo_args("pole", "/p.yaml", "cpu", 10, 640, 4)
     comp = build_yolo_args("components", "/c.yaml", "cpu", 10, 1280, 4)
-    # label smoothing is degenerate with a single class -> off for pole, on for components
-    assert pole["label_smoothing"] == 0.0
-    assert comp["label_smoothing"] > 0.0
     # mixup: extra regularizer reserved for the harder 4-class task
     assert pole["mixup"] == 0.0
     assert comp["mixup"] > 0.0
+
+def test_no_deprecated_label_smoothing():
+    # label_smoothing is deprecated in Ultralytics 8.4+; we must not pass it
+    a = build_yolo_args("components", "/c.yaml", "cpu", 10, 1280, 4)
+    assert "label_smoothing" not in a

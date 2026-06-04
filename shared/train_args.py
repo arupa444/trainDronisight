@@ -40,7 +40,8 @@ def build_yolo_args(subset, data_yaml, device, epochs, imgsz, batch):
         # regularization (small data + large model -> actively guard against overfitting)
         "weight_decay": 0.0005,                         # L2 (explicit, was an implicit default)
         "dropout": 0.1,                                 # light head dropout
-        "label_smoothing": 0.1 if is_components else 0.0,  # multi-class only (no-op for 1 class)
+        # (label_smoothing intentionally omitted: deprecated in Ultralytics 8.4+;
+        #  weight_decay + dropout + mixup + augmentation + early stopping cover regularization)
         # schedule
         "cos_lr": True,
         "patience": 30,                                 # early stop when val stalls
