@@ -2,6 +2,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+from data_prep.profile_images import profile_array
+
 
 def load_oriented_bgr(path) -> np.ndarray:
     """Load an image honoring EXIF orientation, return BGR uint8."""
@@ -29,3 +31,14 @@ def apply_clahe(bgr: np.ndarray, clip: float, grid) -> np.ndarray:
     clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=tuple(grid))
     lab[:, :, 0] = clahe.apply(lab[:, :, 0])
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def clahe_image(bgr: np.ndarray) -> np.ndarray:
+    """Apply the SAME adaptive CLAHE used in data-prep to an inference image.
+
+    Required so a model trained on the `clahe` variant sees the same pixel
+    distribution at inference; skipping this on a clahe-trained model deflates
+    detection confidence. Pairs with load_oriented_bgr() for EXIF correctness.
+    """
+    clip, grid = clahe_params_from_profile(profile_array(bgr))
+    return apply_clahe(bgr, clip, grid)

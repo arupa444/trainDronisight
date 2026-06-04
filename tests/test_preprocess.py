@@ -21,3 +21,10 @@ def test_apply_clahe_increases_contrast_on_low_contrast_input():
     img[:24] = 110  # very low contrast
     out = apply_clahe(img, clip=3.0, grid=(8, 8))
     assert out.std() >= img.std()
+
+def test_clahe_image_runs_full_profile_pipeline():
+    # inference convenience: profile -> params -> apply, in one call
+    from data_prep.preprocess import clahe_image
+    img = np.random.randint(0, 255, (48, 64, 3), np.uint8)
+    out = clahe_image(img)
+    assert out.shape == img.shape and out.dtype == np.uint8

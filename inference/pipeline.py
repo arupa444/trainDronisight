@@ -10,6 +10,7 @@ import cv2
 
 from inference.backends import YoloDetector
 from inference.geometry import crop_with_pad, shift_detection
+from data_prep.preprocess import load_oriented_bgr, clahe_image
 
 
 def _save_crop(crop, crop_dir, name):
@@ -58,10 +59,21 @@ def main():
     ap.add_argument("--crop-dir", default="runs/inference/crops")
     ap.add_argument("--out", default="runs/inference/result.json")
     ap.add_argument("--pole-pad", type=float, default=0.05)
+    ap.add_argument("--pole-conf", type=float, default=0.12,   # recall-leaning (Stage-1: don't miss poles)
+                    help="pole-stage confidence; low favors recall")
+    ap.add_argument("--comp-conf", type=float, default=0.25)
+    ap.add_argument("--pole-imgsz", type=int, default=640)     # match pole training
+    ap.add_argument("--comp-imgsz", type=int, default=1280)    # match component training
+    ap.add_argument("--no-clahe", action="store_true",
+                    help="skip CLAHE (only for models trained on the 'orig' variant)")
     a = ap.parse_args()
-    image = cv2.imread(a.image)
-    pole_det = YoloDetector(a.pole_weights)
-    comp_det = YoloDetector(a.comp_weights)
+    # EXIF-orient + CLAHE once on the full frame: pole runs on it, and every pole
+    # crop inherits the CLAHE, so the component model also sees its trained distribution.
+    image = load_oriented_bgr(a.image)
+    if not a.no_clahe:
+        image = clahe_image(image)
+    pole_det = YoloDetector(a.pole_weights, conf=a.pole_conf, imgsz=a.pole_imgsz)
+    comp_det = YoloDetector(a.comp_weights, conf=a.comp_conf, imgsz=a.comp_imgsz)
     result = run_pipeline(image, pole_det, comp_det, a.crop_dir, Path(a.image).name, pole_pad=a.pole_pad)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(result, indent=2))
