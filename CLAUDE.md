@@ -4,11 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Two-stage object-detection pipeline for **electric-pole inspection** from DJI drone imagery:
-**Model 1** detects the `pole` on the full frame → crop to the pole box (+pad) → **Model 2** detects
-components (`wire`, `h_insulator`, `v_insulator`, `crossarm_stright`) on the *crop* → boxes remapped to
-the full frame, each component re-cropped → structured JSON. The two models are **separate trainings**
-producing separate weights, chained only at inference (`inference/pipeline.py`).
+Three-detector object-detection pipeline for **electric-pole inspection** from DJI drone imagery.
+**Model 1 (`pole`)** detects the pole on the full frame → crop to the pole box (+pad) → then **two
+component detectors run on the crop**:
+- **`component_above_1000`** — the high-frequency classes `wire, h_insulator, v_insulator, crossarm_stright`.
+- **`component_below_1000`** — the rare classes `vegetation, top_crossarm, om_crossarm, rust`.
+
+Both component detectors' boxes are remapped to the full frame and each component is re-cropped →
+structured JSON (`poles[]` each with `components_above[]` and `components_below[]`). The three models
+are **separate trainings** producing separate weights, chained only at inference (`inference/pipeline.py`).
 
 Detection-only (v1). Condition classifier, scoring, and the OpenStreetMap report UI are future work — not in this repo.
 
@@ -22,47 +26,53 @@ Always use `uv`, never bare `pip` (see global instruction). Work inside the acti
 
 ```bash
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-pytest -q                          # full suite (~91 test functions)
+pytest -q                          # full suite (~99 test functions)
 pytest tests/test_pipeline.py -q   # one file
 pytest tests/test_pipeline.py::test_name -q   # one test
 ```
 
-Data root is set by the `DRONISIGHT_DATA` env var (defaults to `/Volumes/dronisight`). It drives **every** path in `shared/config.py` — the two output DBs and the raw source folders (`mem2..mem8` + `4thJuneMem4` + `4thJuneMem8`; the `SOURCE_DIRS` list in `config.py` is the single place to add more). Verify with:
+Data root is set by the `DRONISIGHT_DATA` env var (defaults to `/Volumes/dronisight`). It drives **every** path in `shared/config.py` — the two output DBs and the raw source folders. `config._SOURCE_FOLDER_NAMES` (currently 11 folders incl. `mem2 5th june`, `mem 7.1 5th june`, `mem10`, `4thJuneMem4/8`) is the single place to add/remove captures; `config.SUBSET_CLASSES` is the single place that maps each subset → its class list. Verify with:
 ```bash
 python -c "from shared import config; print(config.YOLO_DB)"
 ```
 
-Training / inference (run on the M4):
+Training / inference (run on the M4) — train in this order:
 ```bash
-python -m train_yolo.train_pole       --version clahe --epochs 100 --imgsz 640  --batch 4
-python -m train_yolo.train_components  --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
-python -m inference.pipeline --image x.jpg --pole-weights runs/pole/yolo/weights/best.pt --comp-weights runs/components/yolo/weights/best.pt
+python -m train_yolo.train_pole                                   --version clahe --epochs 100 --imgsz 640  --batch 4
+python -m train_yolo.train_components --subset component_above_1000 --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
+python -m train_yolo.train_components --subset component_below_1000 --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26m.pt
+python -m inference.pipeline --image x.jpg \
+  --pole-weights runs/pole/yolo/weights/best.pt \
+  --comp-above-weights runs/component_above_1000/yolo/weights/best.pt \
+  --comp-below-weights runs/component_below_1000/yolo/weights/best.pt
 ```
-Rebuild data (only if class policy / CLAHE / split logic changes — DBs are otherwise prebuilt):
+Rebuild data (only if class policy / CLAHE / split / dedup / oversampling logic changes — DBs are otherwise prebuilt):
 ```bash
-python -m data_prep.build_dataset --subset all          # add --no-balance to keep all images
-python -m data_prep.verify_dataset --subset pole        # leakage + label-validity gate
+python -m data_prep.build_dataset --subset all                       # add --no-balance to keep all images
+python -m data_prep.verify_dataset --subset component_above_1000     # leakage + label-validity gate (run per subset)
 ```
 
 `INSTRUCTION.md` is the deep run guide (M4 tuning, Colab, troubleshooting); `docs/superpowers/` holds the design spec and the 3 build plans.
 
 ## Architecture & non-obvious invariants
 
-**Two parallel DBs, one source of truth.** `data_prep/build_dataset.py` writes both formats from the same parse: `yolo_train_db/` (YOLO `.txt`, primary) and `RF_DETR_Faster_RCNN_train_db/` (COCO JSON, for Faster R-CNN + RF-DETR). Each has `pole/` and `components/` subsets. **VOC XML is the label source of truth** — any index-based YOLO `.txt` in the raw data is ignored; everything is re-derived from XML names via `shared/labels.py`.
+**Two parallel DBs, one source of truth.** `data_prep/build_dataset.py` writes both formats from the same parse: `yolo_train_db/` (YOLO `.txt`, primary) and `RF_DETR_Faster_RCNN_train_db/` (COCO JSON, for Faster R-CNN + RF-DETR). Each has three subsets: `pole/`, `component_above_1000/`, `component_below_1000/`. **VOC XML is the label source of truth** — any index-based YOLO `.txt` in the raw data is ignored; everything is re-derived from XML names via `shared/labels.py`.
+
+**Annotation dedup.** Some flights were annotated twice in different folders (e.g. `mem7` and `mem 7.1 5th june` share 161 stems, 157 byte-identical). `config.DEDUP_PAIRS` lists `(primary, secondary)` folder pairs; `data_prep/dedup.py` drops the secondary copy when its `annotation_hash` (from `shared/labels.py`) equals the primary's, and keeps both when they differ. Dedup is **scoped to the configured pair** and matched by filename stem — never global, because DJI counters reset per card so the same stem in unrelated folders is a different image.
 
 **`orig` vs `clahe` variants.** Every image is stored twice: untouched and with adaptive CLAHE (LAB L-channel only, params chosen per-image from an exposure profile in `data_prep/preprocess.py` + `profile_images.py`). Train both variants and keep whichever wins on **val mAP** — CLAHE is a hypothesis, not a guarantee.
 
 **YOLO label-layout invariant (easy to break).** Ultralytics resolves a label by swapping the last `/images/` → `/labels/` in the image path. So labels must mirror the image variant nesting: `labels/<split>/<orig|clahe>/`. Boxes are identical across variants, so the same `.txt` is written into both. After fixing any label/path issue, **delete `*.cache`** under the DB — a poisoned cache keeps reporting `0 images, N backgrounds` even after the fix.
 
-**`data.yaml` is regenerated at train time.** The yaml written during the build hard-codes the build machine's absolute `path:`, which breaks after copying the DB. `train_yolo/train_pole.py` and `train_components.py` rewrite it to the current DB location on every run (`write_data_yaml`).
+**`data.yaml` is regenerated at train time.** The yaml written during the build hard-codes the build machine's absolute `path:`, which breaks after copying the DB. `train_yolo/train_pole.py` and `train_components.py` rewrite it to the current DB location on every run (`write_data_yaml`). `train_components.py` is parameterized by `--subset {component_above_1000,component_below_1000}` and reads its class list from `config.SUBSET_CLASSES`.
 
 **Leakage-safe splits.** `data_prep/grouping.py` groups consecutive DJI frames into capture sequences (>60s gap = new group); `split.py` splits by group, never splitting one, stratified per source folder so every location appears in train. `verify_dataset.py` asserts no group spans multiple splits.
 
-**Class policy.** Only classes with >1000 instances are kept (the 1 pole + 4 component classes in `config.py`). Rare classes (`rust`, `om_crossarm`, `top_crossarm`, `vegetation`) normalize to `None` in `labels.py` — **ignored, never deleted** from source, so they can be reintroduced once more annotations exist.
+**Class policy — three subsets.** All 9 classes are now trained, split by frequency in `config.SUBSET_CLASSES`: `pole`; `component_above_1000` (the 4 high-frequency classes); `component_below_1000` (the 4 rare classes `vegetation, top_crossarm, om_crossarm, rust`, formerly ignored). `shared/labels.py` now maps all 9 to canonical names; only genuinely unknown names → `None`.
 
-**Balancing.** `balance.py` caps each subset toward the rarest kept class, but multi-label co-occurrence leaves residual imbalance (`wire` ≫ `crossarm_stright`). `sample_weights.csv` is emitted for inverse-frequency weighted sampling as an alternative — compare on val.
+**Balancing differs per subset.** `component_above_1000` uses the down-cap (`balance.select_balanced` caps each class toward the rarest, `v_insulator`). `component_below_1000` instead uses **offline oversampling**: `data_prep/oversample.py` (`plan_oversample` + `augment_image`, via albumentations) duplicates rare-class **train** images with bbox-aware, orientation-aware augmentation until each class approaches the max count; val/test stay raw. `build_dataset` forces balance OFF for below_1000 and runs the oversampler only on the train split, writing `<key>_augN.jpg`. `sample_weights.csv` is still emitted.
 
-**Inference must match training preprocessing.** `inference/pipeline.py` applies EXIF-orient + CLAHE **once** on the full frame; every pole crop inherits it, so Model 2 sees its trained distribution. Use `--no-clahe` only for `orig`-trained weights. Default imgsz mirrors training (pole 640, components 1280). The single-model CLIs (`infer_pole`, `infer_components`) do the same.
+**Inference must match training preprocessing.** `inference/pipeline.py` applies EXIF-orient + CLAHE **once** on the full frame; every pole crop inherits it, so both component models see their trained distribution. **Both** `component_above_1000` and `component_below_1000` detectors run on the **pole crop** (per design), each remapped to the full frame. Use `--no-clahe` only for `orig`-trained weights. Default imgsz mirrors training (pole 640, components 1280). The single-model CLIs (`infer_pole`, `infer_components`) do the same.
 
 **YOLO weights fallback.** `train_yolo/weights.py` tries the preferred `yolo26x.pt` and falls back to `yolo11x.pt` with a printed warning if YOLO26 weights aren't fetchable on the installed Ultralytics version. The fallback is expected, not an error.
 

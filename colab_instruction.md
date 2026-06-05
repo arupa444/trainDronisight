@@ -36,7 +36,7 @@ spec there and regenerate (`python -m notebooks.build_notebooks`), **never hand-
 2. **Expected Drive layout** (the notebooks assume exactly this — root `MyDrive/dronisight`):
    ```
    MyDrive/dronisight/
-   ├── yolo_train_db.zip                  # YOLO DB (pole + components)
+   ├── yolo_train_db.zip                  # YOLO DB (pole + component_above_1000 + component_below_1000)
    ├── RF_DETR_Faster_RCNN_train_db.zip   # COCO DB (Faster R-CNN + RF-DETR)
    └── runs/                              # created automatically — your saved weights/plots land here
    ```
@@ -55,11 +55,11 @@ shared across all five.
 
 | Notebook | Does | Outputs (also copied to Drive `runs/`) |
 |---|---|---|
-| `00_data_prep` | Mount Drive, unzip both DBs to `/content/data`, `verify_dataset` (leakage + label validity) | — |
-| `01_train_yolo` | Train **pole** (`imgsz 640`) + **components** (`imgsz 1280`, `--model yolo26m.pt`) | `runs/pole/yolo/weights/best.pt`, `runs/components/yolo/weights/best.pt` |
-| `02_train_faster_rcnn` | Train Faster R-CNN for pole + components | `runs/{pole,components}/faster_rcnn/last.pt` |
-| `03_train_rf_detr` | Train RF-DETR-L for pole + components (the CUDA reason for Colab) | `runs/{pole,components}/rfdetr/` |
-| `04_inference_pipeline` | `restore_runs_from_drive()`, run the two-stage YOLO pipeline, save `result.json` | `runs/inference/result.json` |
+| `00_data_prep` | Mount Drive, unzip both DBs to `/content/data`, `verify_dataset` for all 3 subsets | — |
+| `01_train_yolo` | Train **pole** (640) + **component_above_1000** (1280) + **component_below_1000** (1280) | `runs/{pole,component_above_1000,component_below_1000}/yolo/weights/best.pt` |
+| `02_train_faster_rcnn` | Train Faster R-CNN for the 3 subsets | `runs/{subset}/faster_rcnn/last.pt` |
+| `03_train_rf_detr` | Train RF-DETR-L for the 3 subsets (the CUDA reason for Colab) | `runs/{subset}/rfdetr/` |
+| `04_inference_pipeline` | `restore_runs_from_drive()`, run the 3-detector YOLO pipeline, save `result.json` | `runs/inference/result.json` |
 
 You only need `00` once per session (the unzip is cached by `ensure_dataset`). Then run whichever
 trainer(s) you want; they're independent.
@@ -70,27 +70,32 @@ trainer(s) you want; they're independent.
 
 ### YOLO26 (`01_train_yolo`) — primary
 ```bash
-python -m train_yolo.train_pole       --version clahe --epochs 100 --imgsz 640  --batch 16
-python -m train_yolo.train_components  --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt
+python -m train_yolo.train_pole                                     --version clahe --epochs 100 --imgsz 640  --batch 16
+python -m train_yolo.train_components --subset component_above_1000 --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt
+python -m train_yolo.train_components --subset component_below_1000 --version clahe --epochs 200 --imgsz 1280 --batch 16 --model yolo26m.pt
 ```
 - **Pole at 640** is deliberate — poles fill the frame; 640 detects them fine at ¼ the memory of 1280.
 - **Components at 1280** — thin wires vanish at low res. `yolo26m` is the recommended size (anti-OOM
-  and the main anti-overfit lever on ~1.7 k images); bump to `yolo26l`/`yolo26x` only if the GPU has
-  room and the val curve isn't overfitting.
+  and the main anti-overfit lever); bump to `yolo26l`/`yolo26x` only if the GPU has room and the val
+  curve isn't overfitting.
+- **`component_below_1000`** holds the rare classes; its train split is already offline-oversampled to
+  equalize classes, so give it more epochs and check per-class AP (eval on the un-augmented val/test).
 - Prints whether it's using `yolo26x` or fell back to `yolo11x` (fallback is expected if YOLO26
   weights aren't fetchable on the installed Ultralytics — not an error).
 
 ### Faster R-CNN (`02_train_faster_rcnn`) — torchvision baseline
 ```bash
-python -m train_faster_rcnn.train --subset pole       --version clahe --epochs 30 --batch 4
-python -m train_faster_rcnn.train --subset components --version clahe --epochs 30 --batch 4
+python -m train_faster_rcnn.train --subset pole                 --version clahe --epochs 30 --batch 4
+python -m train_faster_rcnn.train --subset component_above_1000 --version clahe --epochs 30 --batch 4
+python -m train_faster_rcnn.train --subset component_below_1000 --version clahe --epochs 30 --batch 4
 ```
 Downloads COCO-pretrained ResNet50-FPN on first run (needs network; cached after). Reads the COCO DB.
 
 ### RF-DETR-L (`03_train_rf_detr`) — CUDA-preferred
 ```bash
-python -m train_rf_detr.train --subset pole       --version clahe --epochs 50 --batch 4
-python -m train_rf_detr.train --subset components  --version clahe --epochs 50 --batch 4
+python -m train_rf_detr.train --subset pole                 --version clahe --epochs 50 --batch 4
+python -m train_rf_detr.train --subset component_above_1000 --version clahe --epochs 50 --batch 4
+python -m train_rf_detr.train --subset component_below_1000 --version clahe --epochs 50 --batch 4
 ```
 Builds a `valid`-named COCO view via symlinks (no image copy) and trains RF-DETR-L. This is the model
 that's impractical on MPS — Colab CUDA is its intended home.

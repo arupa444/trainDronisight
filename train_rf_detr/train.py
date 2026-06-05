@@ -28,7 +28,7 @@ def run(subset, version, epochs, batch):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--subset", choices=["pole", "components"], required=True)
+    ap.add_argument("--subset", choices=config.SUBSETS, required=True)
     ap.add_argument("--version", choices=["orig", "clahe"], default="clahe")
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch", type=int, default=4)

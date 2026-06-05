@@ -40,7 +40,7 @@ def find_invalid_labels(labels_dir) -> list:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--subset", choices=["pole", "components"], required=True)
+    ap.add_argument("--subset", choices=config.SUBSETS, required=True)
     args = ap.parse_args()
     manifest = config.YOLO_DB / args.subset / "manifest.csv"
     df = pd.read_csv(manifest)

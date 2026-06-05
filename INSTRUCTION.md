@@ -11,7 +11,7 @@ Conventions: shell commands assume you've `cd`-ed into the repo and **activated 
 ## 0. Mental model (read once)
 
 - **Two machines.** Code + the one-time data build happen on the M1 laptop. **All training/inference runs here on the M4 Pro.**
-- **Two-stage detection.** Model 1 finds the pole; Model 2 finds components on the cropped pole region. They are **separate trainings** producing separate weights, chained only at inference.
+- **Three-detector pipeline.** Model 1 finds the pole; then **two** component detectors run on the cropped pole region — `component_above_1000` (the 4 frequent classes) and `component_below_1000` (the 4 rare classes). All three are **separate trainings** producing separate weights, chained only at inference.
 - **No CUDA on Apple Silicon.** YOLO and Faster R-CNN train fine on **MPS**. RF-DETR-L really wants CUDA → run that one on **Colab** (Section 9). The code auto-selects `CUDA → MPS → CPU`, so the same commands work everywhere.
 - **The data is already built.** You do **not** need to re-run data-prep unless you want to change the taxonomy/preprocessing. You just point the code at the DB folders.
 
@@ -82,7 +82,7 @@ This installs torch (MPS build), torchvision, ultralytics, rfdetr, opencv, etc.
 **Sanity checks:**
 ```bash
 python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"   # expect True
-pytest -q                                                                              # expect 91 passed
+pytest -q                                                                              # expect 99 passed
 ```
 
 If `MPS available: False`, you're likely on an Intel Mac or an old torch — reinstall torch ≥ 2.2.
@@ -96,11 +96,12 @@ If `MPS available: False`, you're likely on an Intel Mac or an old torch — rei
 ```bash
 python -m data_prep.build_dataset --subset all          # builds pole + components into both DBs
 python -m data_prep.verify_dataset --subset pole        # leakage + label-validity gate
-python -m data_prep.verify_dataset --subset components
+python -m data_prep.verify_dataset --subset component_above_1000
+python -m data_prep.verify_dataset --subset component_below_1000
 ```
 Useful flags: `--no-balance` (keep all images, skip the class cap — pair with `sample_weights.csv` at train time).
 Each run self-cleans AppleDouble sidecars and prints split sizes + any skipped (EXIF-mismatch / unparseable) files.
-Current expected output (9 source folders, balanced): **pole** 1,736 imgs (1387/259/90), **components** 1,689 imgs (1280/296/113). The balance cap is now set by the rarest component class, `v_insulator`.
+Builds 3 subsets (`pole`, `component_above_1000`, `component_below_1000`) from 11 source folders, after de-duplicating the `mem7` ↔ `mem 7.1 5th june` overlap. `component_above_1000` is balance-capped toward the rarest class (`v_insulator`); `component_below_1000` keeps all images and **oversamples** its train split with augmentation to equalize the rare classes (it prints `+N augmented train`).
 
 ---
 
@@ -118,18 +119,19 @@ python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 640 --batch
 
 **MPS OOM?** lower `--batch` (4→2), lower `--imgsz`, or switch `--model yolo26m.pt`.
 
-## 7. Train Model 2 — component detector
+## 7. Train Model 2 — the two component detectors
 
 ```bash
-python -m train_yolo.train_components --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
+# 2a) the 4 frequent classes (wire, h_insulator, v_insulator, crossarm_stright)
+python -m train_yolo.train_components --subset component_above_1000 --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
+# 2b) the 4 rare classes (vegetation, top_crossarm, om_crossarm, rust); train split is oversampled
+python -m train_yolo.train_components --subset component_below_1000 --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26m.pt
 ```
 - **Keep `imgsz 1280`** here — components include thin wires that vanish at low res.
 - **`yolo26x` at 1280 will likely OOM on 24 GB** → use `--model yolo26m.pt` (recommended) or `yolo26l.pt`, and/or `--batch 2`.
-- **Output:** `runs/components/yolo/weights/best.pt`.
-- More epochs than pole (4 classes, harder). Again confirm the scan shows `<N> images, 0 backgrounds`.
-- **Class imbalance:** the default DB is instance-capped but co-occurrence leaves `wire` ≫ `crossarm_stright`. Two levers if `crossarm_stright`/recall lags:
-  1. Rebuild with `--no-balance` and use `<DB>/components/sample_weights.csv` for inverse-frequency weighted sampling.
-  2. Check **per-class AP** in the run's results (don't trust the single mAP) — Ultralytics writes a `results.csv` and PR curves under the run dir.
+- **Output:** `runs/component_above_1000/yolo/weights/best.pt` and `runs/component_below_1000/yolo/weights/best.pt`.
+- `component_below_1000` is the harder one (genuinely scarce classes); give it more epochs. Its train split is already offline-oversampled to equalize classes, and `train_args.py` adds stronger online aug on top.
+- Always check **per-class AP** in the run's results (don't trust the single mAP) — Ultralytics writes a `results.csv` and PR curves under the run dir. Evaluate on the (un-augmented) val/test.
 
 ---
 
@@ -148,8 +150,9 @@ python -m train_yolo.train_components --version clahe --epochs 150 --imgsz 1280 
 
 ### Faster R-CNN (torchvision, runs on MPS — slower than YOLO)
 ```bash
-python -m train_faster_rcnn.train --subset pole       --version clahe --epochs 30 --batch 2
-python -m train_faster_rcnn.train --subset components --version clahe --epochs 30 --batch 2
+python -m train_faster_rcnn.train --subset pole                 --version clahe --epochs 30 --batch 2
+python -m train_faster_rcnn.train --subset component_above_1000 --version clahe --epochs 30 --batch 2
+python -m train_faster_rcnn.train --subset component_below_1000 --version clahe --epochs 30 --batch 2
 # downloads COCO-pretrained ResNet50-FPN weights on first run (needs network)
 # output: runs/{subset}/faster_rcnn/last.pt
 ```
@@ -157,7 +160,8 @@ python -m train_faster_rcnn.train --subset components --version clahe --epochs 3
 ### RF-DETR-L (use Colab / CUDA — impractical on MPS)
 Locally it will warn and try MPS; for a real run use the Colab notebook (Section 10):
 ```bash
-python -m train_rf_detr.train --subset components --version clahe --epochs 50 --batch 4
+python -m train_rf_detr.train --subset component_above_1000 --version clahe --epochs 50 --batch 4
+python -m train_rf_detr.train --subset component_below_1000 --version clahe --epochs 50 --batch 4
 ```
 
 ---
@@ -185,19 +189,22 @@ Notebooks are **generated** from `notebooks/build_notebooks.py` — edit the spe
 ### Single model (debugging)
 ```bash
 python -m inference.infer_pole       --image some.jpg --weights runs/pole/yolo/weights/best.pt --conf 0.25
-python -m inference.infer_components  --image crop.jpg --weights runs/components/yolo/weights/best.pt --conf 0.25
+python -m inference.infer_components  --image crop.jpg --weights runs/component_above_1000/yolo/weights/best.pt --conf 0.25
 ```
+(`infer_components` is generic — point `--weights` at either component model.)
 
-### Full two-stage pipeline (the real thing)
+### Full three-detector pipeline (the real thing)
 ```bash
 python -m inference.pipeline \
   --image some.jpg \
   --pole-weights runs/pole/yolo/weights/best.pt \
-  --comp-weights runs/components/yolo/weights/best.pt \
+  --comp-above-weights runs/component_above_1000/yolo/weights/best.pt \
+  --comp-below-weights runs/component_below_1000/yolo/weights/best.pt \
   --pole-pad 0.05 \
   --crop-dir runs/inference/crops \
   --out runs/inference/result.json
 ```
+- Both component detectors run on the **pole crop**; their boxes are remapped to the full frame.
 - `--pole-pad 0.05` adds a 5 % margin around the pole crop so components on the pole edge (wire ends, crossarm tips) aren't clipped. Set `0.0` for a tight crop; raise it to test the trade-off.
 - **Output JSON shape:**
   ```json
@@ -206,10 +213,15 @@ python -m inference.pipeline \
     "poles": [
       {
         "box": [x1,y1,x2,y2], "confidence": 0.97, "crop_path": "runs/inference/crops/some_pole0.jpg",
-        "components": [
+        "components_above": [
           { "class": "wire", "confidence": 0.88,
             "box_full": [x1,y1,x2,y2], "box_crop": [x1,y1,x2,y2],
-            "crop_path": "runs/inference/crops/some_pole0_comp0.jpg" }
+            "crop_path": "runs/inference/crops/some_pole0_above_comp0.jpg" }
+        ],
+        "components_below": [
+          { "class": "vegetation", "confidence": 0.41,
+            "box_full": [x1,y1,x2,y2], "box_crop": [x1,y1,x2,y2],
+            "crop_path": "runs/inference/crops/some_pole0_below_comp0.jpg" }
         ]
       }
     ]

@@ -16,7 +16,8 @@ def build_yolo_args(subset, data_yaml, device, epochs, imgsz, batch):
     on this data (pass --model yolo26m.pt). Watch the train-vs-val curves Ultralytics
     plots in results.png: a widening gap = overfitting -> smaller model / fewer epochs.
     """
-    is_components = subset == "components"
+    is_components = subset != "pole"                       # any component subset
+    is_below = subset == "component_below_1000"            # rare classes -> stronger aug
     return {
         "data": data_yaml,
         "device": device,
@@ -35,8 +36,9 @@ def build_yolo_args(subset, data_yaml, device, epochs, imgsz, batch):
         "scale": 0.9 if is_components else 0.5,         # crop-gap mitigation
         "mosaic": 1.0,
         "close_mosaic": 10,                             # finish on realistic images
-        "copy_paste": 0.3 if is_components else 0.0,    # help scarcer component classes
-        "mixup": 0.1 if is_components else 0.0,         # extra regularizer for the 4-class task
+        # component_below_1000 is already offline-oversampled; add stronger online aug on top
+        "copy_paste": (0.5 if is_below else 0.3) if is_components else 0.0,
+        "mixup": (0.15 if is_below else 0.1) if is_components else 0.0,
         # regularization (small data + large model -> actively guard against overfitting)
         "weight_decay": 0.0005,                         # L2 (explicit, was an implicit default)
         "dropout": 0.1,                                 # light head dropout

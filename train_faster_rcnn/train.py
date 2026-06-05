@@ -35,7 +35,7 @@ def train_one_epoch(model, loader, optimizer, device):
 
 def run(subset, version, epochs, batch):
     device = select_device()
-    class_names = config.POLE_CLASSES if subset == "pole" else config.COMPONENT_CLASSES
+    class_names = config.SUBSET_CLASSES[subset]
     img_dir = config.COCO_DB / subset / "images" / "train" / version
     ann = config.COCO_DB / subset / "annotations" / f"instances_train_{version}.json"
     ds = CocoDetectionDataset(img_dir, ann)
@@ -54,7 +54,7 @@ def run(subset, version, epochs, batch):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--subset", choices=["pole", "components"], required=True)
+    ap.add_argument("--subset", choices=config.SUBSETS, required=True)
     ap.add_argument("--version", choices=["orig", "clahe"], default="clahe")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=2)

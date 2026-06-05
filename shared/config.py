@@ -7,18 +7,38 @@ SEED = 1337
 # Override with the DRONISIGHT_DATA env var (e.g. when training on the M4 from a
 # local copy of the DBs); defaults to the external SSD mount used during data-prep.
 SSD_ROOT = Path(os.environ.get("DRONISIGHT_DATA", "/Volumes/dronisight"))
-SOURCE_DIRS = [SSD_ROOT / f"mem{i}" for i in range(2, 9)] + [  # mem1 has no labels
-    SSD_ROOT / "4thJuneMem4",   # added: pole + crossarm_stright top-up (4-Jun)
-    SSD_ROOT / "4thJuneMem8",
+# Raw source folders (names contain spaces). Edit this list to add/remove captures.
+_SOURCE_FOLDER_NAMES = [
+    "mem2 5th june", "mem3", "mem4 5th june", "mem5", "mem6", "mem7", "mem8",
+    "mem 7.1 5th june", "mem10", "4thJuneMem4", "4thJuneMem8",
 ]
+SOURCE_DIRS = [SSD_ROOT / name for name in _SOURCE_FOLDER_NAMES]
+
+# Annotation dedup: when the same image (matched by filename stem) appears in both
+# folders of a pair with an IDENTICAL annotation hash, drop the copy in the second
+# folder. Different annotations for the same stem are kept (they get distinct keys).
+DEDUP_PAIRS = [("mem7", "mem 7.1 5th june")]
 
 # Output DBs
 YOLO_DB = SSD_ROOT / "yolo_train_db"
 COCO_DB = SSD_ROOT / "RF_DETR_Faster_RCNN_train_db"
 
-# Class policy (>1000-instance classes only; others ignored, never deleted)
+# Class policy -> three detectors:
+#   pole                  : the pole on the full frame
+#   component_above_1000  : the 4 high-frequency component classes (>1000 instances)
+#   component_below_1000  : the 4 rare component classes (<1000) -- now trained (oversampled),
+#                           previously ignored. Still never deleted from source.
 POLE_CLASSES = ["pole"]
-COMPONENT_CLASSES = ["wire", "h_insulator", "v_insulator", "crossarm_stright"]
+COMPONENT_ABOVE_CLASSES = ["wire", "h_insulator", "v_insulator", "crossarm_stright"]
+COMPONENT_BELOW_CLASSES = ["vegetation", "top_crossarm", "om_crossarm", "rust"]
+
+# One place every consumer reads the per-subset class list from.
+SUBSET_CLASSES = {
+    "pole": POLE_CLASSES,
+    "component_above_1000": COMPONENT_ABOVE_CLASSES,
+    "component_below_1000": COMPONENT_BELOW_CLASSES,
+}
+SUBSETS = list(SUBSET_CLASSES)
 
 # Split
 SPLIT_RATIOS = {"train": 0.80, "val": 0.15, "test": 0.05}

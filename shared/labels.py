@@ -1,8 +1,9 @@
 """Label source-of-truth = name-based VOC XML. Index-based YOLO .txt files are ignored."""
 
 # All raw spellings seen in the data, mapped to a canonical kept class.
-# Excluded classes (rust, om_crossarm, top_crossarm, vegetation) are intentionally
-# NOT listed -> they normalize to None (ignored, never deleted from source).
+# Anything NOT listed normalizes to None (genuinely unknown classes only).
+# The 4 rare classes (vegetation, top_crossarm, om_crossarm, rust) are now KEPT
+# (trained as the `component_below_1000` detector) -- previously they were excluded.
 _CANONICAL = {
     "pole": "pole",
     "wire": "wire",
@@ -11,6 +12,10 @@ _CANONICAL = {
     "crossarm_stright": "crossarm_stright",
     "crossarm_stright ": "crossarm_stright",
     "crossarmstright": "crossarm_stright",  # the mem5 stray 10th class
+    "vegetation": "vegetation",
+    "top_crossarm": "top_crossarm",
+    "om_crossarm": "om_crossarm",
+    "rust": "rust",
 }
 
 
@@ -62,6 +67,15 @@ def parse_voc(path) -> Annotation:
             continue  # drop degenerate boxes
         boxes.append(Box(name, xmin, ymin, xmax, ymax))
     return Annotation(width, height, boxes)
+
+
+def annotation_hash(boxes) -> str:
+    """Content hash of an annotation: sha256 over the sorted (name, coords) tuples.
+    Two annotations with the same set of boxes (any order) hash equal. Used to dedup
+    re-annotated images that appear in more than one source folder."""
+    import hashlib
+    items = sorted((b.name, b.xmin, b.ymin, b.xmax, b.ymax) for b in boxes)
+    return hashlib.sha256(repr(items).encode()).hexdigest()
 
 
 def to_yolo_line(box: Box, img_w: int, img_h: int, class_names: list) -> str:

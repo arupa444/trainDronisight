@@ -12,9 +12,11 @@ def test_is_case_insensitive():
     assert normalize_class_name("H_Insulator") == "h_insulator"
     assert normalize_class_name(" WIRE ") == "wire"
 
-def test_excluded_classes_return_none():
+def test_rare_classes_now_kept():
+    # previously normalized to None; now trained as the component_below_1000 detector
     for raw in ["rust", "om_crossarm", "top_crossarm", "vegetation"]:
-        assert normalize_class_name(raw) is None
+        assert normalize_class_name(raw) == raw
 
 def test_unknown_returns_none():
     assert normalize_class_name("banana") is None
+    assert normalize_class_name(None) is None
