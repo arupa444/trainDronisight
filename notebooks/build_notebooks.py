@@ -15,6 +15,10 @@ _SETUP = [
     "!pip -q install uv && uv pip install --system -e .",
     "import torch; print('CUDA:', torch.cuda.is_available())",
     "from notebooks.colab_utils import mount_drive, drive_db_zip, ensure_dataset\nmount_drive()",
+    # shared.config defaults to /Volumes/dronisight (the M4's SSD mount). On Colab the
+    # DBs are unzipped to /content/data, so point DRONISIGHT_DATA there or every module
+    # that reads config.YOLO_DB / config.COCO_DB (verify + all trainers) hits a missing path.
+    "import os; os.environ['DRONISIGHT_DATA'] = '/content/data'  # matches the ensure_dataset() dest below",
 ]
 
 NOTEBOOKS = {
