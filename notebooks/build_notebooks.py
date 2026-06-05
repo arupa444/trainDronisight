@@ -3,7 +3,7 @@ from pathlib import Path
 import nbformat
 from nbformat.v4 import new_notebook, new_code_cell, new_markdown_cell
 
-REPO_URL = "https://github.com/REPLACE_ME/trainDronisight.git"  # set before publishing
+REPO_URL = "https://github.com/arupa444/trainDronisight.git"  # set before publishing
 
 _SETUP = [
     "# @title Setup: GPU check + repo + deps",
@@ -29,8 +29,9 @@ NOTEBOOKS = {
     ],
     "01_train_yolo": _SETUP + [
         "ensure_dataset(drive_db_zip('yolo_train_db'), '/content/data', 'yolo_train_db')",
-        "!python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 1280 --batch 16",
-        "!python -m train_yolo.train_components --version clahe --epochs 150 --imgsz 1280 --batch 16",
+        "# pole fills the frame -> imgsz 640 (matches train_pole.py default); components need 1280 for thin wires\n"
+        "!python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 640 --batch 16",
+        "!python -m train_yolo.train_components --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt",
     ],
     "02_train_faster_rcnn": _SETUP + [
         "ensure_dataset(drive_db_zip('RF_DETR_Faster_RCNN_train_db'), '/content/data', 'RF_DETR_Faster_RCNN_train_db')",
