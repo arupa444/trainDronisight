@@ -82,7 +82,7 @@ This installs torch (MPS build), torchvision, ultralytics, rfdetr, opencv, etc.
 **Sanity checks:**
 ```bash
 python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"   # expect True
-pytest -q                                                                              # expect 87 passed
+pytest -q                                                                              # expect 91 passed
 ```
 
 If `MPS available: False`, you're likely on an Intel Mac or an old torch — reinstall torch ≥ 2.2.
@@ -164,22 +164,19 @@ python -m train_rf_detr.train --subset components --version clahe --epochs 50 --
 
 ## 10. Colab path (CUDA — best for RF-DETR, faster for all)
 
-Notebooks are **generated** from `notebooks/build_notebooks.py` — edit the spec there, never the `.ipynb` by hand.
+➡️ **Full Colab + Google-Drive walkthrough: [`colab_instruction.md`](colab_instruction.md).** Quick version:
 
-1. **Set your repo URL:** edit `REPO_URL` in `notebooks/build_notebooks.py` to
-   `https://github.com/arupa444/trainDronisight.git`, then regenerate:
-   ```bash
-   python -m notebooks.build_notebooks
-   git add notebooks && git commit -m "chore: set Colab REPO_URL" && git push
-   ```
-2. **Upload the DBs to Google Drive** as zips at `MyDrive/dronisight/`:
+Notebooks are **generated** from `notebooks/build_notebooks.py` — edit the spec there, never the `.ipynb` by hand. `REPO_URL` is already set to `https://github.com/arupa444/trainDronisight.git` (only re-edit + regenerate if you fork/move the repo).
+
+1. **Upload the DBs to Google Drive** as zips at `MyDrive/dronisight/`:
    ```bash
    (cd ~/dronisight_data && zip -rqX yolo_train_db.zip yolo_train_db -x '*/._*' \
       && zip -rqX RF_DETR_Faster_RCNN_train_db.zip RF_DETR_Faster_RCNN_train_db -x '*/._*')
    # then upload both .zip to Google Drive: MyDrive/dronisight/
    ```
-3. In Colab open the notebook, **Runtime → Change runtime type → GPU**, then **Run all**:
+2. In Colab open the notebook, **Runtime → Change runtime type → GPU**, then **Run all**:
    - `00_data_prep` (verify), `01_train_yolo`, `02_train_faster_rcnn`, `03_train_rf_detr`, `04_inference_pipeline`.
+   - Each trainer copies `runs/` (weights + plots) to `MyDrive/dronisight/runs/` at the end; `04` restores it. See `colab_instruction.md` for the Drive layout and save/restore details.
 
 ---
 

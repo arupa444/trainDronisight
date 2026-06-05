@@ -28,3 +28,32 @@ def test_ensure_dataset_skips_when_present(tmp_path):
 def test_repo_clone_command():
     cmd = colab_utils.repo_setup_cmd("https://github.com/u/trainDronisight.git", "/content/repo")
     assert "git clone" in cmd and "/content/repo" in cmd
+
+
+def test_drive_runs_dir():
+    assert colab_utils.drive_runs_dir("/d/dronisight") == "/d/dronisight/runs"
+
+
+def test_save_runs_to_drive_copies_tree(tmp_path):
+    runs = tmp_path / "runs"
+    (runs / "pole" / "yolo" / "weights").mkdir(parents=True)
+    (runs / "pole" / "yolo" / "weights" / "best.pt").write_bytes(b"W")
+    drive = tmp_path / "drive"
+    dest = colab_utils.save_runs_to_drive(local_runs=str(runs), drive_root=str(drive))
+    assert dest == f"{drive}/runs"
+    assert (drive / "runs" / "pole" / "yolo" / "weights" / "best.pt").read_bytes() == b"W"
+
+
+def test_restore_runs_from_drive_copies_back(tmp_path):
+    drive = tmp_path / "drive"
+    (drive / "runs" / "components" / "yolo" / "weights").mkdir(parents=True)
+    (drive / "runs" / "components" / "yolo" / "weights" / "best.pt").write_bytes(b"X")
+    local = tmp_path / "repo" / "runs"
+    n = colab_utils.restore_runs_from_drive(drive_root=str(drive), local_runs=str(local))
+    assert n == 1
+    assert (local / "components" / "yolo" / "weights" / "best.pt").read_bytes() == b"X"
+
+
+def test_restore_runs_from_drive_noop_when_absent(tmp_path):
+    assert colab_utils.restore_runs_from_drive(drive_root=str(tmp_path / "nope"),
+                                               local_runs=str(tmp_path / "runs")) == 0

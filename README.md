@@ -4,7 +4,7 @@ Two-stage object-detection pipeline for **electric-pole inspection** from DJI dr
 Detects poles, crops them, then detects pole components (insulators, wires, crossarms) on the crop —
 the foundation for downstream condition assessment.
 
-> **Status:** Detection v1 — data-prep + 3 trainers + inference pipeline. **87 tests passing.**
+> **Status:** Detection v1 — data-prep + 3 trainers + inference pipeline. **91 tests passing.**
 > Condition classifier, point/scoring system, and the OpenStreetMap report UI are **future work** (see [Roadmap](#roadmap)).
 
 ---
@@ -50,8 +50,8 @@ python -m inference.pipeline --image <img.jpg> \
 | `train_faster_rcnn/` | torchvision Faster R-CNN (COCO) |
 | `train_rf_detr/` | RF-DETR-L (Roboflow, COCO view) |
 | `inference/` | `Detection`/`Detector` backends, crop geometry, single-model CLIs, two-stage `pipeline` |
-| `notebooks/` | 5 generated Colab notebooks (set `REPO_URL` first) |
-| `tests/` | 87 unit tests |
+| `notebooks/` | 5 generated Colab notebooks (Drive-backed) — see [`colab_instruction.md`](colab_instruction.md) |
+| `tests/` | 91 unit tests |
 | `docs/superpowers/` | design **spec** + the 3 implementation **plans** |
 
 ## The data DBs
@@ -88,7 +88,7 @@ Built once by `data_prep` onto the data root (default `/Volumes/dronisight`, ove
 
 ```bash
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-pytest -q          # 87 tests
+pytest -q          # 91 tests
 ```
 
 Design rationale lives in [`docs/superpowers/specs/`](docs/superpowers/specs/); the task-by-task build plans in [`docs/superpowers/plans/`](docs/superpowers/plans/).

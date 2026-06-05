@@ -22,7 +22,7 @@ Always use `uv`, never bare `pip` (see global instruction). Work inside the acti
 
 ```bash
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-pytest -q                          # full suite (~87 test functions)
+pytest -q                          # full suite (~91 test functions)
 pytest tests/test_pipeline.py -q   # one file
 pytest tests/test_pipeline.py::test_name -q   # one test
 ```
@@ -72,7 +72,7 @@ python -m data_prep.verify_dataset --subset pole        # leakage + label-validi
 
 ## Notebooks
 
-The 5 Colab notebooks in `notebooks/` are **generated** by `notebooks/build_notebooks.py` — edit the spec there and regenerate (`python -m notebooks.build_notebooks`), never hand-edit the `.ipynb`. Set `REPO_URL` before regenerating.
+The 5 Colab notebooks in `notebooks/` are **generated** by `notebooks/build_notebooks.py` — edit the spec there and regenerate (`python -m notebooks.build_notebooks`), never hand-edit the `.ipynb`. `REPO_URL` is already set. They are Google-Drive-backed: data unzips from `MyDrive/dronisight/*.zip` to `/content/data` (with `DRONISIGHT_DATA` set there), and each trainer saves `runs/` back to Drive via `colab_utils.save_runs_to_drive()` since Colab runtimes are ephemeral. The full Colab/Drive walkthrough is `colab_instruction.md`.
 
 ## macOS / exFAT gotcha
 

@@ -36,25 +36,36 @@ NOTEBOOKS = {
         "# pole fills the frame -> imgsz 640 (matches train_pole.py default); components need 1280 for thin wires\n"
         "!python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 640 --batch 16",
         "!python -m train_yolo.train_components --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt",
+        "# Colab runtimes are ephemeral -> copy weights + plots to Drive before the session ends\n"
+        "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
     "02_train_faster_rcnn": _SETUP + [
         "ensure_dataset(drive_db_zip('RF_DETR_Faster_RCNN_train_db'), '/content/data', 'RF_DETR_Faster_RCNN_train_db')",
         "!python -m train_faster_rcnn.train --subset pole --version clahe --epochs 30 --batch 4",
         "!python -m train_faster_rcnn.train --subset components --version clahe --epochs 30 --batch 4",
+        "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
     "03_train_rf_detr": _SETUP + [
         "ensure_dataset(drive_db_zip('RF_DETR_Faster_RCNN_train_db'), '/content/data', 'RF_DETR_Faster_RCNN_train_db')",
         "!python -m train_rf_detr.train --subset pole --version clahe --epochs 50 --batch 4",
         "!python -m train_rf_detr.train --subset components --version clahe --epochs 50 --batch 4",
+        "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
     "04_inference_pipeline": _SETUP + [
-        "# point these at trained weights (on Drive or in runs/)\n"
+        "ensure_dataset(drive_db_zip('yolo_train_db'), '/content/data', 'yolo_train_db')",
+        "# fresh runtime? pull previously-trained weights back from Drive into runs/\n"
+        "from notebooks.colab_utils import restore_runs_from_drive\nprint('restored', restore_runs_from_drive(), 'files from Drive')",
+        "# point these at trained weights (now in runs/ after the restore above)\n"
         "import glob, os\n"
         "POLE=max(glob.glob('runs/pole/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
         "COMP=max(glob.glob('runs/components/yolo*/weights/best.pt'), key=os.path.getmtime)\nprint(POLE, COMP)",
         "import glob\nIMG=sorted(glob.glob('/content/data/yolo_train_db/components/images/test/orig/*.jpg'))[0]\nprint(IMG)",
         "!python -m inference.pipeline --image \"$IMG\" --pole-weights $POLE --comp-weights $COMP --out /content/result.json",
         "import json; print(json.dumps(json.load(open('/content/result.json')), indent=2))",
+        "# persist the result + crops to Drive\n"
+        "from notebooks.colab_utils import save_runs_to_drive\n"
+        "import shutil, os\nos.makedirs('runs/inference', exist_ok=True)\n"
+        "shutil.copy('/content/result.json', 'runs/inference/result.json')\nprint('saved to', save_runs_to_drive())",
     ],
 }
 
