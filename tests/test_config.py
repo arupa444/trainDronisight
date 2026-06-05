@@ -8,8 +8,9 @@ def test_split_ratios_sum_to_one():
     assert abs(sum(config.SPLIT_RATIOS.values()) - 1.0) < 1e-9
     assert set(config.SPLIT_RATIOS) == {"train", "val", "test"}
 
-def test_source_dirs_are_mem2_to_mem8():
-    assert [p.name for p in config.SOURCE_DIRS] == [f"mem{i}" for i in range(2, 9)]
+def test_source_dirs_include_mem2_to_mem8_and_june_folders():
+    assert [p.name for p in config.SOURCE_DIRS] == \
+        [f"mem{i}" for i in range(2, 9)] + ["4thJuneMem4", "4thJuneMem8"]
 
 def test_seed_is_fixed():
     assert isinstance(config.SEED, int)

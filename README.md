@@ -4,7 +4,7 @@ Two-stage object-detection pipeline for **electric-pole inspection** from DJI dr
 Detects poles, crops them, then detects pole components (insulators, wires, crossarms) on the crop —
 the foundation for downstream condition assessment.
 
-> **Status:** Detection v1 — data-prep + 3 trainers + inference pipeline. **82 tests passing.**
+> **Status:** Detection v1 — data-prep + 3 trainers + inference pipeline. **87 tests passing.**
 > Condition classifier, point/scoring system, and the OpenStreetMap report UI are **future work** (see [Roadmap](#roadmap)).
 
 ---
@@ -51,7 +51,7 @@ python -m inference.pipeline --image <img.jpg> \
 | `train_rf_detr/` | RF-DETR-L (Roboflow, COCO view) |
 | `inference/` | `Detection`/`Detector` backends, crop geometry, single-model CLIs, two-stage `pipeline` |
 | `notebooks/` | 5 generated Colab notebooks (set `REPO_URL` first) |
-| `tests/` | 82 unit tests |
+| `tests/` | 87 unit tests |
 | `docs/superpowers/` | design **spec** + the 3 implementation **plans** |
 
 ## The data DBs
@@ -69,13 +69,13 @@ Built once by `data_prep` onto the data root (default `/Volumes/dronisight`, ove
 ```
 
 - **`orig` vs `clahe`:** every image is stored both untouched and with adaptive CLAHE (exposure fix for backlit/blown-sky frames). Train both, keep whichever wins on val mAP.
-- **Splits** are grouped by capture sequence (no near-duplicate leakage) and stratified across all 7 capture locations.
-- Built from ~1,041 annotated frames: **pole** 995 imgs (743/204/48), **components** 1,023 imgs (810/186/27).
+- **Splits** are grouped by capture sequence (no near-duplicate leakage) and stratified across all 9 capture folders.
+- Built from 1,790 annotated frames across `mem2`–`mem8` + `4thJuneMem4` + `4thJuneMem8`: **pole** 1,736 imgs (1387/259/90), **components** 1,689 imgs (1280/296/113). The two `4thJune*` folders are a targeted top-up of the two scarcest kept classes (`pole`, `crossarm_stright`) — they contain no wire/insulator labels.
 
 ## Models & current dataset notes
 
 - **Primary:** YOLO26x via MPS on the M4 Pro. Falls back to `yolo11x` (with a printed warning) if YOLO26 weights aren't reachable on your Ultralytics version.
-- **Class balance:** components are capped toward the rarest kept class, but multi-label co-occurrence leaves residual imbalance (`wire` ≫ `crossarm_stright`). `sample_weights.csv` is emitted so you can try inverse-frequency weighted sampling instead — compare on val mAP.
+- **Class balance:** components are capped toward the rarest kept class — now `v_insulator` (the `4thJune*` top-up of `crossarm_stright` narrowed the old `wire` ≫ `crossarm_stright` gap). Multi-label co-occurrence still leaves residual imbalance, and the cap removes very few images. `sample_weights.csv` is emitted so you can try inverse-frequency weighted sampling instead — compare on val mAP.
 - Rare classes (`rust`, `om_crossarm`, `top_crossarm`, `vegetation`, all <1000 instances) are **ignored** in v1, not deleted — re-introduce once more annotations exist.
 
 ## Roadmap (out of scope for this repo today)
@@ -88,7 +88,7 @@ Built once by `data_prep` onto the data root (default `/Volumes/dronisight`, ove
 
 ```bash
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-pytest -q          # 82 tests
+pytest -q          # 87 tests
 ```
 
 Design rationale lives in [`docs/superpowers/specs/`](docs/superpowers/specs/); the task-by-task build plans in [`docs/superpowers/plans/`](docs/superpowers/plans/).

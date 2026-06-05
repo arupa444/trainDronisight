@@ -7,7 +7,10 @@ SEED = 1337
 # Override with the DRONISIGHT_DATA env var (e.g. when training on the M4 from a
 # local copy of the DBs); defaults to the external SSD mount used during data-prep.
 SSD_ROOT = Path(os.environ.get("DRONISIGHT_DATA", "/Volumes/dronisight"))
-SOURCE_DIRS = [SSD_ROOT / f"mem{i}" for i in range(2, 9)]  # mem1 has no labels
+SOURCE_DIRS = [SSD_ROOT / f"mem{i}" for i in range(2, 9)] + [  # mem1 has no labels
+    SSD_ROOT / "4thJuneMem4",   # added: pole + crossarm_stright top-up (4-Jun)
+    SSD_ROOT / "4thJuneMem8",
+]
 
 # Output DBs
 YOLO_DB = SSD_ROOT / "yolo_train_db"

@@ -82,7 +82,7 @@ This installs torch (MPS build), torchvision, ultralytics, rfdetr, opencv, etc.
 **Sanity checks:**
 ```bash
 python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"   # expect True
-pytest -q                                                                              # expect 82 passed
+pytest -q                                                                              # expect 87 passed
 ```
 
 If `MPS available: False`, you're likely on an Intel Mac or an old torch — reinstall torch ≥ 2.2.
@@ -91,7 +91,7 @@ If `MPS available: False`, you're likely on an Intel Mac or an old torch — rei
 
 ## 5. (Optional) Rebuild the data from raw annotations
 
-**Only if** you changed the class policy, CLAHE, or split logic. Requires the raw `mem2…mem8` folders present under `DRONISIGHT_DATA`. Otherwise skip — the DBs are ready.
+**Only if** you changed the class policy, CLAHE, or split logic. Requires the raw source folders present under `DRONISIGHT_DATA` — `mem2…mem8` plus `4thJuneMem4` and `4thJuneMem8` (the source list lives in `shared/config.py`). Otherwise skip — the DBs are ready.
 
 ```bash
 python -m data_prep.build_dataset --subset all          # builds pole + components into both DBs
@@ -100,6 +100,7 @@ python -m data_prep.verify_dataset --subset components
 ```
 Useful flags: `--no-balance` (keep all images, skip the class cap — pair with `sample_weights.csv` at train time).
 Each run self-cleans AppleDouble sidecars and prints split sizes + any skipped (EXIF-mismatch / unparseable) files.
+Current expected output (9 source folders, balanced): **pole** 1,736 imgs (1387/259/90), **components** 1,689 imgs (1280/296/113). The balance cap is now set by the rarest component class, `v_insulator`.
 
 ---
 
@@ -113,7 +114,7 @@ python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 640 --batch
 - **`imgsz 640` is deliberate:** poles fill most of the frame, so 640 detects them fine and uses ~¼ the memory of 1280. (Save the high res for the *component* model.)
 - It prints whether it's using **`yolo26x`** or fell back to **`yolo11x`** (fallback is normal if YOLO26 weights aren't fetchable on your Ultralytics version — not an error).
 - **Output:** `runs/pole/yolo/weights/best.pt` (and `last.pt`). Re-runs go to `runs/pole/yolo2/…`.
-- **Sanity check the scan line:** it must say `<N> images, 0 backgrounds` (e.g. `743 images`). If it says `0 images, 743 backgrounds`, labels aren't being found — see Troubleshooting.
+- **Sanity check the scan line:** it must say `<N> images, 0 backgrounds` (e.g. `1387 images` for the pole train split). If it says `0 images, 1387 backgrounds`, labels aren't being found — see Troubleshooting.
 
 **MPS OOM?** lower `--batch` (4→2), lower `--imgsz`, or switch `--model yolo26m.pt`.
 
