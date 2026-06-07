@@ -21,3 +21,14 @@ def test_ignores_appledouble_files(tmp_path):
     (d / "._real.JPG").write_bytes(b"x"); (d / "._real.xml").write_bytes(b"\x00\x05")
     samples = collect_samples([d])
     assert [s.image.name for s in samples] == ["real.JPG"]
+
+
+def test_parent_dir_xml_fallback(tmp_path):
+    # 6thMem2-style: XML in the parent dir, image nested one level below (no sibling XML)
+    parent = tmp_path / "6thMem2"; nested = parent / "6thMem2"; nested.mkdir(parents=True)
+    (parent / "a.xml").write_text("<annotation/>")     # label one level up
+    (nested / "a.JPG").write_bytes(b"x")               # image nested
+    samples = collect_samples([nested])
+    assert len(samples) == 1
+    assert samples[0].image == nested / "a.JPG"
+    assert samples[0].xml == parent / "a.xml"

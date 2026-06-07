@@ -16,6 +16,25 @@ _CANONICAL = {
     "top_crossarm": "top_crossarm",
     "om_crossarm": "om_crossarm",
     "rust": "rust",
+    # --- component-condition classes (6th june data) ---
+    "straight_crossarm_normal": "straight_crossarm_normal",
+    "straight_crossarm_band": "straight_crossarm_band",
+    "v_insulator_normal": "v_insulator_normal",
+    "wire_normal": "wire_normal",
+    "h_insulator_normal": "h_insulator_normal",
+    "cross_wire": "cross_wire",
+    "h_insulator_broken": "h_insulator_broken",
+    "v_insulator_band": "v_insulator_band",
+    "v_insulator_broken": "v_insulator_broken",
+    "top_crossarm_band": "top_crossarm_band",
+    "h_insulator_chip_off": "h_insulator_chip_off",
+    "om_crossarm_normal": "om_crossarm_normal",
+    "v_insulator_chip_off": "v_insulator_chip_off",
+    "top_crossarm_normal": "top_crossarm_normal",
+    "top_corssarm_normal": "top_crossarm_normal",      # misspelling -> merge
+    "v_insulator_puncture": "v_insulator_chip_off",    # merge punctures into chip_off
+    "h_insulator_puncture": "h_insulator_chip_off",
+    # 'w' (stray) and 'om_crossarm_band' (excluded) intentionally absent -> normalize to None
 }
 
 

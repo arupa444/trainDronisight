@@ -89,11 +89,17 @@ def _write_sample(subset, split_name, key, bgr, clahe_img, ann, class_names,
 
 def build_subset(subset: str, balance: bool):
     class_names = sample_class_list(subset)
-    # below_1000 is class-balanced by OFFLINE OVERSAMPLING (not the down-cap): keep every
-    # image, then augment rare-class train images up toward the max class count.
-    do_balance = balance and config.BALANCE_CAP_ENABLED and subset != "component_below_1000"
+    # Balance modes:
+    #   target (e.g. classification=400): split raw, then on TRAIN cap each class DOWN to the
+    #     target and augment under-target classes UP to it; val/test stay raw.
+    #   below_1000: keep all, oversample TRAIN up to the max class count.
+    #   else (pole/above): legacy down-cap toward the rarest kept class.
+    target = config.BALANCE_TARGET.get(subset)
+    do_target = target is not None
+    do_balance = (balance and config.BALANCE_CAP_ENABLED
+                  and not do_target and subset != "component_below_1000")
     do_oversample = subset == "component_below_1000"
-    samples = collect_samples(config.SOURCE_DIRS)
+    samples = collect_samples(config.SUBSET_SOURCE_DIRS.get(subset, config.SOURCE_DIRS))
 
     # parse + keep only images that contain >=1 class for this subset
     parsed = {}
@@ -137,6 +143,10 @@ def build_subset(subset: str, balance: bool):
     skipped_dim = 0
     n_aug = 0
     for split_name, split_items in split.items():
+        if do_target and split_name == "train":
+            # cap each class DOWN to the target by dropping excess train images (val/test stay raw)
+            split_items = select_balanced(split_items, class_names, enabled=True,
+                                          seed=config.SEED, cap=target)
         written = []
         for it in split_items:
             s, ann = parsed[it["image"]]
@@ -153,9 +163,10 @@ def build_subset(subset: str, balance: bool):
                           coco_per_split, manifest_rows, it["source"], it["group"], prof, clip)
             written.append(it)
 
-        # below_1000: oversample the TRAIN split with bbox-aware augmentation to equalize classes
-        if do_oversample and split_name == "train" and written:
-            for j, idx in enumerate(plan_oversample(written, class_names, seed=config.SEED)):
+        # oversample TRAIN with bbox-aware augmentation: below_1000 -> equalize to the max class
+        # count (target=None); component_classification -> bring under-target classes up to target.
+        if (do_oversample or do_target) and split_name == "train" and written:
+            for j, idx in enumerate(plan_oversample(written, class_names, seed=config.SEED, target=target)):
                 it = written[idx]
                 s, ann = parsed[it["image"]]
                 bgr = load_oriented_bgr(s.image)
@@ -194,9 +205,12 @@ def build_subset(subset: str, balance: bool):
     weights = sample_weights(items, class_names)
     pd.DataFrame({"name": [it["key"] for it in items], "weight": weights}) \
         .to_csv(config.YOLO_DB / subset / "sample_weights.csv", index=False)
+    balance_mode = ("target" if do_target else "cap_rarest" if do_balance
+                    else "oversample_max" if do_oversample else "none")
     meta = {"subset": subset, "version_hash": version_hash,
-            "n_images": len(items), "balanced": bool(do_balance),
-            "oversampled_train": n_aug, "class_names": class_names}
+            "n_images": len(items), "balance_mode": balance_mode,
+            "balance_target": target, "oversampled_train": n_aug,
+            "class_names": class_names}
     for db in (config.YOLO_DB, config.COCO_DB):
         (db / subset).mkdir(parents=True, exist_ok=True)
         (db / subset / "dataset_meta.json").write_text(json.dumps(meta, indent=2))

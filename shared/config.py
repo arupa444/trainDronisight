@@ -31,14 +31,43 @@ COCO_DB = SSD_ROOT / "RF_DETR_Faster_RCNN_train_db"
 POLE_CLASSES = ["pole"]
 COMPONENT_ABOVE_CLASSES = ["wire", "h_insulator", "v_insulator", "crossarm_stright"]
 COMPONENT_BELOW_CLASSES = ["vegetation", "top_crossarm", "om_crossarm", "rust"]
+# Condition of a detected component (run on the above/below component crop). 14 classes;
+# train is balanced to BALANCE_TARGET per class (cap the big ones, augment the small ones).
+COMPONENT_CLASSIFICATION_CLASSES = [
+    "straight_crossarm_normal", "straight_crossarm_band", "v_insulator_normal", "wire_normal",
+    "h_insulator_normal", "cross_wire", "h_insulator_broken", "v_insulator_band",
+    "v_insulator_broken", "top_crossarm_band", "h_insulator_chip_off", "om_crossarm_normal",
+    "v_insulator_chip_off", "top_crossarm_normal",
+]
 
 # One place every consumer reads the per-subset class list from.
 SUBSET_CLASSES = {
     "pole": POLE_CLASSES,
     "component_above_1000": COMPONENT_ABOVE_CLASSES,
     "component_below_1000": COMPONENT_BELOW_CLASSES,
+    "component_classification": COMPONENT_CLASSIFICATION_CLASSES,
 }
 SUBSETS = list(SUBSET_CLASSES)
+
+# Per-subset raw source folders: the mem captures feed pole/components; the '6th june'
+# close-up condition captures feed component_classification.
+_CONDITION_FOLDER_NAMES = [
+    "6thMem1AllTeam1",
+    "6thMem2AllTeam1/6thMem2AllTeam1",   # images nested one level below their XMLs
+    "6thMem3AllTeam1", "6thMem4AllTeam1", "6thMem5AllTeam1",
+    "6thMem6AllTeam1", "6thMem7AllTeam1", "6thMem8AllTeam1",
+]
+CONDITION_SOURCE_DIRS = [SSD_ROOT / "6th june " / n for n in _CONDITION_FOLDER_NAMES]
+SUBSET_SOURCE_DIRS = {
+    "pole": SOURCE_DIRS,
+    "component_above_1000": SOURCE_DIRS,
+    "component_below_1000": SOURCE_DIRS,
+    "component_classification": CONDITION_SOURCE_DIRS,
+}
+
+# Per-subset TRAIN class-balance target (instances/class): cap classes above it, augment below.
+# Subsets not listed use cap-to-rarest (pole/above) or oversample-to-max (below).
+BALANCE_TARGET = {"component_classification": 400}
 
 # Split
 SPLIT_RATIOS = {"train": 0.80, "val": 0.15, "test": 0.05}

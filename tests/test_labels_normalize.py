@@ -17,6 +17,20 @@ def test_rare_classes_now_kept():
     for raw in ["rust", "om_crossarm", "top_crossarm", "vegetation"]:
         assert normalize_class_name(raw) == raw
 
+def test_condition_classes_kept_and_merged():
+    # 14 condition classes pass through
+    for raw in ["v_insulator_broken", "h_insulator_chip_off", "top_crossarm_normal", "cross_wire"]:
+        assert normalize_class_name(raw) == raw
+    # data-quality merges
+    assert normalize_class_name("top_corssarm_normal") == "top_crossarm_normal"   # misspelling
+    assert normalize_class_name("v_insulator_puncture") == "v_insulator_chip_off"
+    assert normalize_class_name("h_insulator_puncture") == "h_insulator_chip_off"
+
+def test_dropped_condition_labels_return_none():
+    # 'w' (stray) and om_crossarm_band (excluded from the 14) -> dropped
+    assert normalize_class_name("w") is None
+    assert normalize_class_name("om_crossarm_band") is None
+
 def test_unknown_returns_none():
     assert normalize_class_name("banana") is None
     assert normalize_class_name(None) is None
