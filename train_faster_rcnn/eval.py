@@ -62,7 +62,7 @@ def _per_class_ap(coco_eval, coco_gt):
     return rows
 
 
-def evaluate(subset, version, weights, split="test", conf=0.05):
+def evaluate(subset, version, weights, split="test", conf=0.05, min_size=1333):
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
     device = select_device()
@@ -72,7 +72,9 @@ def evaluate(subset, version, weights, split="test", conf=0.05):
     ds = CocoDetectionDataset(img_dir, ann)            # augment=False (clean eval)
     dl = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=_collate)
 
-    model = build_fasterrcnn(num_classes=len(class_names))
+    # evaluate at the SAME resolution the model was trained at
+    model = build_fasterrcnn(num_classes=len(class_names),
+                             min_size=min_size, max_size=round(min_size * 1.5))
     model.load_state_dict(torch.load(weights, map_location=device))
     dets = collect_detections(model, dl, device, conf=conf)
     print(f"[eval] {subset} {split}: {len(ds)} images, {len(dets)} detections "
@@ -100,9 +102,11 @@ def main():
     ap.add_argument("--weights", default=None,
                     help="defaults to runs/<subset>/faster_rcnn/best.pt")
     ap.add_argument("--conf", type=float, default=0.05)
+    ap.add_argument("--min-size", type=int, default=1333, dest="min_size",
+                    help="must match the min_size the model was trained at")
     a = ap.parse_args()
     weights = a.weights or f"runs/{a.subset}/faster_rcnn/best.pt"
-    evaluate(a.subset, a.version, weights, a.split, a.conf)
+    evaluate(a.subset, a.version, weights, a.split, a.conf, a.min_size)
 
 
 if __name__ == "__main__":

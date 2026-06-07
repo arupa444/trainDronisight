@@ -76,16 +76,17 @@ def _loader(subset, split, version, batch, workers, shuffle, persistent=True, au
                       persistent_workers=(persistent and workers > 0))
 
 
-def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005):
+def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005, min_size=1333):
     device = select_device()
     class_names = config.SUBSET_CLASSES[subset]
+    max_size = round(min_size * 1.5)  # fits a 4:3 drone frame's long side at this min_size
     # train loader is AUGMENTED (hflip + color jitter) to fight overfitting on small data;
     # val loader is clean. Parallel prefetch keeps the GPU fed off a slow Drive mount.
     dl = _loader(subset, "train", version, batch, workers, shuffle=True, augment=True)
     # val loader: fewer, non-persistent workers (runs briefly once/epoch) -> avoids 2x pools
     val_dl = _loader(subset, "val", version, batch, min(workers, 4), shuffle=False,
                      persistent=False, augment=False)  # None if the val split isn't present
-    model = build_fasterrcnn(num_classes=len(class_names))
+    model = build_fasterrcnn(num_classes=len(class_names), min_size=min_size, max_size=max_size)
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad],
                           lr=lr, momentum=0.9, weight_decay=5e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)  # smooth LR decay
@@ -105,6 +106,8 @@ def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005):
           f"val={n_val} ({'clean' if val_dl is not None else 'MISSING -> val_loss=nan'})")
     print(f"[frcnn] batch={batch}  workers={workers} (val={min(workers, 4)})  "
           f"pin_memory={pin}  epochs={epochs}  patience={patience}  lr={lr}")
+    print(f"[frcnn] input resize: min_size={min_size} max_size={max_size} "
+          f"(default is 800/1333 — raised for thin wires/small objects)")
     print(f"[frcnn] optimizer=SGD+CosineLR  weight_decay=5e-4  |  outputs -> {out_dir}")
     print("=" * 64, flush=True)
 
@@ -144,8 +147,10 @@ def main():
     ap.add_argument("--patience", type=int, default=7,
                     help="early-stop after this many epochs with no val_loss improvement")
     ap.add_argument("--lr", type=float, default=0.005)
+    ap.add_argument("--min-size", type=int, default=1333, dest="min_size",
+                    help="shorter-side resize (default 1333; raise for small objects, lower if OOM)")
     a = ap.parse_args()
-    run(a.subset, a.version, a.epochs, a.batch, a.workers, a.patience, a.lr)
+    run(a.subset, a.version, a.epochs, a.batch, a.workers, a.patience, a.lr, a.min_size)
 
 
 if __name__ == "__main__":
