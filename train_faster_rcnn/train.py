@@ -93,6 +93,21 @@ def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005):
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "results.csv"
     csv_path.write_text("epoch,train_loss,val_loss,lr\n")  # YOLO-style log for plotting/overfit
+
+    # ---- run config banner (printed before training so you can confirm the setup) ----
+    n_train = len(dl.dataset)
+    n_val = len(val_dl.dataset) if val_dl is not None else 0
+    pin = (device == "cuda")
+    print("=" * 64)
+    print(f"[frcnn] subset={subset}  version={version}  device={device}")
+    print(f"[frcnn] classes({len(class_names)}): {', '.join(class_names)}")
+    print(f"[frcnn] images: train={n_train} (augmented: hflip+jitter)  |  "
+          f"val={n_val} ({'clean' if val_dl is not None else 'MISSING -> val_loss=nan'})")
+    print(f"[frcnn] batch={batch}  workers={workers} (val={min(workers, 4)})  "
+          f"pin_memory={pin}  epochs={epochs}  patience={patience}  lr={lr}")
+    print(f"[frcnn] optimizer=SGD+CosineLR  weight_decay=5e-4  |  outputs -> {out_dir}")
+    print("=" * 64, flush=True)
+
     best_val, bad = float("inf"), 0
     for ep in range(epochs):
         tr = train_one_epoch(model, dl, opt, device, desc=f"epoch {ep+1}/{epochs} train")
