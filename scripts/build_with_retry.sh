@@ -11,7 +11,9 @@ YDB=/Volumes/dronisight/yolo_train_db
 CDB=/Volumes/dronisight/RF_DETR_Faster_RCNN_train_db
 LOG="$ROOT/runs/logs/build_runner.log"
 STATUS="$ROOT/runs/logs/build_status.txt"
-SUBSETS=(pole component_above_1000 component_below_1000)
+# subsets from args, else default to all four
+SUBSETS=("$@")
+[ ${#SUBSETS[@]} -eq 0 ] && SUBSETS=(pole component_above_1000 component_below_1000 component_classification)
 MAX_TRIES=30
 mkdir -p "$ROOT/runs/logs"
 
@@ -56,10 +58,12 @@ for sub in "${SUBSETS[@]}"; do
 done
 
 find "$YDB" -name '*.cache' -delete 2>/dev/null
-if "$PY" -m data_prep.verify_dataset --subset pole >> "$LOG" 2>&1 \
-   && "$PY" -m data_prep.verify_dataset --subset component_above_1000 >> "$LOG" 2>&1 \
-   && "$PY" -m data_prep.verify_dataset --subset component_below_1000 >> "$LOG" 2>&1; then
-  note "Dronisight build" "ALL 3 SUBSETS BUILT + VERIFIED - done"
+ok=1
+for sub in "${SUBSETS[@]}"; do
+  "$PY" -m data_prep.verify_dataset --subset "$sub" >> "$LOG" 2>&1 || ok=0
+done
+if [ "$ok" -eq 1 ]; then
+  note "Dronisight build" "BUILT + VERIFIED: ${SUBSETS[*]}"
 else
   note "Dronisight build" "built but VERIFY FAILED - check build_runner.log"
 fi
