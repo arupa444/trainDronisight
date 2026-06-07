@@ -10,9 +10,17 @@ from pathlib import Path
 
 import cv2
 
-from inference.backends import YoloDetector
+from inference.backends import YoloDetector, RFDetrDetector
 from inference.geometry import crop_with_pad, shift_detection
 from data_prep.preprocess import load_oriented_bgr, clahe_image
+
+
+def build_detector(backend, weights, conf, imgsz, class_names, resolution=728):
+    """Pick a detector backend for a pipeline stage. YOLO reads class names from the model;
+    RF-DETR needs the explicit class_names (it returns numeric class ids)."""
+    if backend == "rfdetr":
+        return RFDetrDetector(weights, class_names, conf=conf, resolution=resolution)
+    return YoloDetector(weights, conf=conf, imgsz=imgsz)
 
 
 def _save_crop(crop, crop_dir, name):
@@ -80,15 +88,25 @@ def main():
     ap.add_argument("--comp-imgsz", type=int, default=1280)    # match component training
     ap.add_argument("--no-clahe", action="store_true",
                     help="skip CLAHE (only for models trained on the 'orig' variant)")
+    # per-stage backend: mix and match (e.g. YOLO pole + RF-DETR components)
+    ap.add_argument("--pole-backend", choices=["yolo", "rfdetr"], default="yolo")
+    ap.add_argument("--comp-above-backend", choices=["yolo", "rfdetr"], default="yolo")
+    ap.add_argument("--comp-below-backend", choices=["yolo", "rfdetr"], default="yolo")
+    ap.add_argument("--rfdetr-resolution", type=int, default=728,
+                    help="RF-DETR inference resolution; must match training (x56, e.g. 1008)")
     a = ap.parse_args()
     # EXIF-orient + CLAHE once on the full frame: pole runs on it, and every pole crop
     # inherits the CLAHE, so both component models also see their trained distribution.
     image = load_oriented_bgr(a.image)
     if not a.no_clahe:
         image = clahe_image(image)
-    pole_det = YoloDetector(a.pole_weights, conf=a.pole_conf, imgsz=a.pole_imgsz)
-    above_det = YoloDetector(a.comp_above_weights, conf=a.comp_conf, imgsz=a.comp_imgsz)
-    below_det = YoloDetector(a.comp_below_weights, conf=a.comp_conf, imgsz=a.comp_imgsz)
+    from shared import config
+    pole_det = build_detector(a.pole_backend, a.pole_weights, a.pole_conf, a.pole_imgsz,
+                              config.POLE_CLASSES, a.rfdetr_resolution)
+    above_det = build_detector(a.comp_above_backend, a.comp_above_weights, a.comp_conf,
+                               a.comp_imgsz, config.COMPONENT_ABOVE_CLASSES, a.rfdetr_resolution)
+    below_det = build_detector(a.comp_below_backend, a.comp_below_weights, a.comp_conf,
+                               a.comp_imgsz, config.COMPONENT_BELOW_CLASSES, a.rfdetr_resolution)
     result = run_pipeline(image, pole_det, above_det, below_det,
                           a.crop_dir, Path(a.image).name, pole_pad=a.pole_pad)
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)

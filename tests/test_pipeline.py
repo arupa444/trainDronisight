@@ -33,3 +33,23 @@ def test_pipeline_handles_no_poles():
     img = np.zeros((50, 50, 3), np.uint8)
     out = run_pipeline(img, _Fake([]), _Fake([]), _Fake([]), crop_dir=None, image_name="n.jpg")
     assert out["poles"] == []
+
+
+def test_build_detector_selects_backend(monkeypatch):
+    import inference.pipeline as P
+    calls = {}
+
+    def fake_yolo(w, conf, imgsz):
+        calls["yolo"] = (w, conf, imgsz)
+        return "Y"
+
+    def fake_rf(w, names, conf, resolution):
+        calls["rfdetr"] = (w, names, conf, resolution)
+        return "R"
+
+    monkeypatch.setattr(P, "YoloDetector", fake_yolo)
+    monkeypatch.setattr(P, "RFDetrDetector", fake_rf)
+    assert P.build_detector("yolo", "y.pt", 0.25, 1280, ["wire"]) == "Y"
+    assert calls["yolo"] == ("y.pt", 0.25, 1280)
+    assert P.build_detector("rfdetr", "r.pth", 0.3, 1280, ["wire"], resolution=1008) == "R"
+    assert calls["rfdetr"] == ("r.pth", ["wire"], 0.3, 1008)

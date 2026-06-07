@@ -88,18 +88,26 @@ class TorchvisionDetector:
 
 
 class RFDetrDetector:
-    """Wraps an RF-DETR-L checkpoint behind the Detector interface."""
+    """Wraps an RF-DETR-L checkpoint behind the Detector interface.
 
-    def __init__(self, weights_path, class_names, conf=0.5):
+    resolution must match training (multiple of 56). The pipeline feeds BGR arrays
+    (cv2/load_oriented_bgr) but RF-DETR expects RGB, so we convert."""
+
+    def __init__(self, weights_path, class_names, conf=0.5, resolution=728):
         from rfdetr import RFDETRLarge
-        self.model = RFDETRLarge(pretrain_weights=weights_path)
+        self.model = RFDETRLarge(pretrain_weights=weights_path, resolution=resolution)
         self.class_names = class_names
         self.conf = conf
 
     def predict(self, image) -> list:
+        import numpy as np
+        if isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] == 3:
+            image = np.ascontiguousarray(image[:, :, ::-1])  # BGR -> RGB
         det = self.model.predict(image, threshold=self.conf)
         results = []
         for xyxy, conf, cls_id in zip(det.xyxy, det.confidence, det.class_id):
-            results.append(Detection(self.class_names[int(cls_id)], float(conf),
-                                     tuple(float(v) for v in xyxy)))
+            i = int(cls_id)
+            if 0 <= i < len(self.class_names):            # guard against id/label drift
+                results.append(Detection(self.class_names[i], float(conf),
+                                         tuple(float(v) for v in xyxy)))
         return results
