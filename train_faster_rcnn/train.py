@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 # Route DataLoader-worker IPC through temp files instead of /dev/shm. Colab/Docker give a
 # tiny /dev/shm, so with num_workers>0 + large image tensors you otherwise hit
@@ -26,24 +27,27 @@ def _collate(batch):
     return tuple(zip(*batch))
 
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, desc="train"):
     model.train()
     model.to(device)
     total = 0.0
-    for images, targets in loader:
-        images = [i.to(device) for i in images]
+    # tqdm shows live steps/sec, ETA and running loss (prints periodically in Colab's
+    # non-tty !python output, so you can see it's alive mid-epoch).
+    pbar = tqdm(loader, desc=desc, mininterval=5.0, dynamic_ncols=True, leave=False)
+    for i, (images, targets) in enumerate(pbar, 1):
+        images = [im.to(device) for im in images]
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        loss_dict = model(images, targets)
-        loss = sum(loss_dict.values())
+        loss = sum(model(images, targets).values())
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         total += float(loss.item())
+        pbar.set_postfix(loss=f"{total / i:.4f}")
     return total / max(len(loader), 1)
 
 
 @torch.no_grad()
-def eval_loss(model, loader, device):
+def eval_loss(model, loader, device, desc="val"):
     """Validation loss for overfit tracking. torchvision detectors only return losses in
     train() mode, so we forward in train() under no_grad — but put BatchNorm in eval() so
     the val data doesn't pollute the running stats. No backprop."""
@@ -52,10 +56,12 @@ def eval_loss(model, loader, device):
         if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
             m.eval()
     total = 0.0
-    for images, targets in loader:
-        images = [i.to(device) for i in images]
+    pbar = tqdm(loader, desc=desc, mininterval=5.0, dynamic_ncols=True, leave=False)
+    for i, (images, targets) in enumerate(pbar, 1):
+        images = [im.to(device) for im in images]
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         total += float(sum(model(images, targets).values()).item())
+        pbar.set_postfix(loss=f"{total / i:.4f}")
     return total / max(len(loader), 1)
 
 
@@ -89,10 +95,11 @@ def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005):
     csv_path.write_text("epoch,train_loss,val_loss,lr\n")  # YOLO-style log for plotting/overfit
     best_val, bad = float("inf"), 0
     for ep in range(epochs):
-        tr = train_one_epoch(model, dl, opt, device)
+        tr = train_one_epoch(model, dl, opt, device, desc=f"epoch {ep+1}/{epochs} train")
         cur_lr = opt.param_groups[0]["lr"]
         sched.step()
-        vl = eval_loss(model, val_dl, device) if val_dl is not None else float("nan")
+        vl = (eval_loss(model, val_dl, device, desc=f"epoch {ep+1}/{epochs} val")
+              if val_dl is not None else float("nan"))
         print(f"epoch {ep+1}/{epochs} train_loss={tr:.4f} val_loss={vl:.4f} lr={cur_lr:.5f}")
         with csv_path.open("a") as f:
             f.write(f"{ep+1},{tr:.6f},{vl:.6f},{cur_lr:.6f}\n")
