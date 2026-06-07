@@ -62,7 +62,7 @@ def _per_class_ap(coco_eval, coco_gt):
     return rows
 
 
-def evaluate(subset, version, weights, split="test", conf=0.05, min_size=1333):
+def evaluate(subset, version, weights, split="test", conf=0.05, min_size=2000):
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
     device = select_device()
@@ -102,8 +102,8 @@ def main():
     ap.add_argument("--weights", default=None,
                     help="defaults to runs/<subset>/faster_rcnn/best.pt")
     ap.add_argument("--conf", type=float, default=0.05)
-    ap.add_argument("--min-size", type=int, default=1333, dest="min_size",
-                    help="must match the min_size the model was trained at")
+    ap.add_argument("--min-size", type=int, default=2000, dest="min_size",
+                    help="must match the min_size the model was trained at (default 2000)")
     a = ap.parse_args()
     weights = a.weights or f"runs/{a.subset}/faster_rcnn/best.pt"
     evaluate(a.subset, a.version, weights, a.split, a.conf, a.min_size)

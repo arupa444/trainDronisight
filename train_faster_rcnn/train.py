@@ -76,7 +76,7 @@ def _loader(subset, split, version, batch, workers, shuffle, persistent=True, au
                       persistent_workers=(persistent and workers > 0))
 
 
-def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005, min_size=1333):
+def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005, min_size=2000):
     device = select_device()
     class_names = config.SUBSET_CLASSES[subset]
     max_size = round(min_size * 1.5)  # fits a 4:3 drone frame's long side at this min_size
@@ -147,8 +147,9 @@ def main():
     ap.add_argument("--patience", type=int, default=7,
                     help="early-stop after this many epochs with no val_loss improvement")
     ap.add_argument("--lr", type=float, default=0.005)
-    ap.add_argument("--min-size", type=int, default=1333, dest="min_size",
-                    help="shorter-side resize (default 1333; raise for small objects, lower if OOM)")
+    ap.add_argument("--min-size", type=int, default=2000, dest="min_size",
+                    help="shorter-side resize (default 2000 high-res; lower if OOM, raise toward "
+                         "native ~3000 for max detail)")
     a = ap.parse_args()
     run(a.subset, a.version, a.epochs, a.batch, a.workers, a.patience, a.lr, a.min_size)
 
