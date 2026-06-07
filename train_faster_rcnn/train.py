@@ -33,13 +33,18 @@ def train_one_epoch(model, loader, optimizer, device):
     return total / max(len(loader), 1)
 
 
-def run(subset, version, epochs, batch):
+def run(subset, version, epochs, batch, workers=8):
     device = select_device()
     class_names = config.SUBSET_CLASSES[subset]
     img_dir = config.COCO_DB / subset / "images" / "train" / version
     ann = config.COCO_DB / subset / "annotations" / f"instances_train_{version}.json"
     ds = CocoDetectionDataset(img_dir, ann)
-    dl = DataLoader(ds, batch_size=batch, shuffle=True, collate_fn=_collate)
+    # Parallel prefetch so the GPU isn't starved waiting on (slow) image reads — matters a
+    # lot when training straight off a Google Drive mount. pin_memory only helps CUDA;
+    # persistent_workers keeps the worker pool alive across epochs.
+    dl = DataLoader(ds, batch_size=batch, shuffle=True, collate_fn=_collate,
+                    num_workers=workers, pin_memory=(device == "cuda"),
+                    persistent_workers=workers > 0)
     model = build_fasterrcnn(num_classes=len(class_names))
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad],
                           lr=0.005, momentum=0.9, weight_decay=5e-4)
@@ -58,8 +63,10 @@ def main():
     ap.add_argument("--version", choices=["orig", "clahe"], default="clahe")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=2)
+    ap.add_argument("--workers", type=int, default=8,
+                    help="DataLoader workers; raise to hide Drive-mount read latency")
     a = ap.parse_args()
-    run(a.subset, a.version, a.epochs, a.batch)
+    run(a.subset, a.version, a.epochs, a.batch, a.workers)
 
 
 if __name__ == "__main__":
