@@ -59,44 +59,54 @@ def eval_loss(model, loader, device):
     return total / max(len(loader), 1)
 
 
-def _loader(subset, split, version, batch, workers, shuffle, persistent=True):
+def _loader(subset, split, version, batch, workers, shuffle, persistent=True, augment=False):
     img_dir = config.COCO_DB / subset / "images" / split / version
     ann = config.COCO_DB / subset / "annotations" / f"instances_{split}_{version}.json"
     if not Path(ann).exists() or not Path(img_dir).is_dir():
         return None
-    ds = CocoDetectionDataset(img_dir, ann)
+    ds = CocoDetectionDataset(img_dir, ann, augment=augment)
     return DataLoader(ds, batch_size=batch, shuffle=shuffle, collate_fn=_collate,
                       num_workers=workers, pin_memory=(select_device() == "cuda"),
                       persistent_workers=(persistent and workers > 0))
 
 
-def run(subset, version, epochs, batch, workers=8):
+def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005):
     device = select_device()
     class_names = config.SUBSET_CLASSES[subset]
-    # Parallel prefetch so the GPU isn't starved waiting on (slow) image reads — matters a
-    # lot when training straight off a Google Drive mount.
-    dl = _loader(subset, "train", version, batch, workers, shuffle=True)
+    # train loader is AUGMENTED (hflip + color jitter) to fight overfitting on small data;
+    # val loader is clean. Parallel prefetch keeps the GPU fed off a slow Drive mount.
+    dl = _loader(subset, "train", version, batch, workers, shuffle=True, augment=True)
     # val loader: fewer, non-persistent workers (runs briefly once/epoch) -> avoids 2x pools
     val_dl = _loader(subset, "val", version, batch, min(workers, 4), shuffle=False,
-                     persistent=False)  # None if the val split isn't present locally
+                     persistent=False, augment=False)  # None if the val split isn't present
     model = build_fasterrcnn(num_classes=len(class_names))
     opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad],
-                          lr=0.005, momentum=0.9, weight_decay=5e-4)
+                          lr=lr, momentum=0.9, weight_decay=5e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)  # smooth LR decay
     out_dir = Path(f"runs/{subset}/faster_rcnn")
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "results.csv"
-    csv_path.write_text("epoch,train_loss,val_loss\n")  # YOLO-style log for plotting/overfit
-    best_val = float("inf")
+    csv_path.write_text("epoch,train_loss,val_loss,lr\n")  # YOLO-style log for plotting/overfit
+    best_val, bad = float("inf"), 0
     for ep in range(epochs):
         tr = train_one_epoch(model, dl, opt, device)
+        cur_lr = opt.param_groups[0]["lr"]
+        sched.step()
         vl = eval_loss(model, val_dl, device) if val_dl is not None else float("nan")
-        print(f"epoch {ep+1}/{epochs} train_loss={tr:.4f} val_loss={vl:.4f}")
+        print(f"epoch {ep+1}/{epochs} train_loss={tr:.4f} val_loss={vl:.4f} lr={cur_lr:.5f}")
         with csv_path.open("a") as f:
-            f.write(f"{ep+1},{tr:.6f},{vl:.6f}\n")
+            f.write(f"{ep+1},{tr:.6f},{vl:.6f},{cur_lr:.6f}\n")
         torch.save(model.state_dict(), out_dir / "last.pt")
-        if val_dl is not None and vl < best_val:           # keep the best-generalizing weights
-            best_val = vl
-            torch.save(model.state_dict(), out_dir / "best.pt")
+        if val_dl is not None:
+            if vl < best_val:                              # new best -> save + reset patience
+                best_val, bad = vl, 0
+                torch.save(model.state_dict(), out_dir / "best.pt")
+            else:
+                bad += 1
+                if bad >= patience:                        # early stop at the val minimum
+                    print(f"early stop @ epoch {ep+1}: val_loss hasn't beaten "
+                          f"{best_val:.4f} in {patience} epochs (best.pt kept).")
+                    break
     return out_dir / "last.pt"
 
 
@@ -109,8 +119,11 @@ def main():
     ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 2),
                     help="DataLoader workers (default = CPU cores, capped at 8); "
                          "raise to hide Drive-mount read latency")
+    ap.add_argument("--patience", type=int, default=7,
+                    help="early-stop after this many epochs with no val_loss improvement")
+    ap.add_argument("--lr", type=float, default=0.005)
     a = ap.parse_args()
-    run(a.subset, a.version, a.epochs, a.batch, a.workers)
+    run(a.subset, a.version, a.epochs, a.batch, a.workers, a.patience, a.lr)
 
 
 if __name__ == "__main__":
