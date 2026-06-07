@@ -2,6 +2,7 @@
     python -m train_faster_rcnn.train --subset component_above_1000 --version clahe --epochs 30 --batch 8
 """
 import argparse
+import os
 from pathlib import Path
 
 import torch
@@ -105,8 +106,9 @@ def main():
     ap.add_argument("--version", choices=["orig", "clahe"], default="clahe")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=2)
-    ap.add_argument("--workers", type=int, default=8,
-                    help="DataLoader workers; raise to hide Drive-mount read latency")
+    ap.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 2),
+                    help="DataLoader workers (default = CPU cores, capped at 8); "
+                         "raise to hide Drive-mount read latency")
     a = ap.parse_args()
     run(a.subset, a.version, a.epochs, a.batch, a.workers)
 
