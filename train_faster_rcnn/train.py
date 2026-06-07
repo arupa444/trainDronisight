@@ -1,11 +1,19 @@
 """Faster R-CNN training. Usage:
-    python -m train_faster_rcnn.train --subset components --version clahe --epochs 30 --batch 2
+    python -m train_faster_rcnn.train --subset component_above_1000 --version clahe --epochs 30 --batch 8
 """
 import argparse
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
+
+# Route DataLoader-worker IPC through temp files instead of /dev/shm. Colab/Docker give a
+# tiny /dev/shm, so with num_workers>0 + large image tensors you otherwise hit
+# "unable to allocate shared memory (shm) ... Resource temporarily unavailable".
+try:
+    torch.multiprocessing.set_sharing_strategy("file_system")
+except Exception:
+    pass
 
 from shared import config
 from shared.device import select_device
