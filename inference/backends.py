@@ -98,12 +98,15 @@ class RFDetrDetector:
         self.model = RFDETRLarge(pretrain_weights=weights_path, resolution=resolution)
         self.class_names = class_names
         self.conf = conf
+        # predict() needs a shape divisible by block_size (32); resolution is only required
+        # %56, so e.g. 1008 must be rounded to 1024 for inference.
+        self.shape = round(resolution / 32) * 32
 
     def predict(self, image) -> list:
         import numpy as np
         if isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] == 3:
             image = np.ascontiguousarray(image[:, :, ::-1])  # BGR -> RGB
-        det = self.model.predict(image, threshold=self.conf)
+        det = self.model.predict(image, threshold=self.conf, shape=self.shape)
         results = []
         for xyxy, conf, cls_id in zip(det.xyxy, det.confidence, det.class_id):
             i = int(cls_id)
