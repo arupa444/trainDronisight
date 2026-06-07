@@ -52,9 +52,11 @@ NOTEBOOKS = {
     ],
     "03_train_rf_detr": _SETUP + [
         "ensure_dataset(drive_db_zip('RF_DETR_Faster_RCNN_train_db'), '/content/data', 'RF_DETR_Faster_RCNN_train_db')",
-        "!python -m train_rf_detr.train --subset pole --version clahe --epochs 50 --batch 4",
-        "!python -m train_rf_detr.train --subset component_above_1000 --version clahe --epochs 50 --batch 4",
-        "!python -m train_rf_detr.train --subset component_below_1000 --version clahe --epochs 50 --batch 4",
+        "# --version clahe trains on CLAHE pixels; --resolution (x56) raised from lib default ~560\n"
+        "# so thin wires survive (728; use 1008 for more detail if the GPU has memory)\n"
+        "!python -m train_rf_detr.train --subset pole --version clahe --epochs 50 --batch 4 --resolution 728",
+        "!python -m train_rf_detr.train --subset component_above_1000 --version clahe --epochs 50 --batch 4 --resolution 728",
+        "!python -m train_rf_detr.train --subset component_below_1000 --version clahe --epochs 50 --batch 4 --resolution 728",
         "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
     "04_inference_pipeline": _SETUP + [
