@@ -106,8 +106,8 @@ def run(subset, version, epochs, batch, workers=8, patience=7, lr=0.005, min_siz
           f"val={n_val} ({'clean' if val_dl is not None else 'MISSING -> val_loss=nan'})")
     print(f"[frcnn] batch={batch}  workers={workers} (val={min(workers, 4)})  "
           f"pin_memory={pin}  epochs={epochs}  patience={patience}  lr={lr}")
-    print(f"[frcnn] input resize: min_size={min_size} max_size={max_size} "
-          f"(default is 800/1333 — raised for thin wires/small objects)")
+    print(f"[frcnn] input resize (ACTIVE): min_size={min_size} max_size={max_size}  "
+          f"<- overrides torchvision's 800/1333 default (bigger = thin wires survive)")
     print(f"[frcnn] optimizer=SGD+CosineLR  weight_decay=5e-4  |  outputs -> {out_dir}")
     print("=" * 64, flush=True)
 
