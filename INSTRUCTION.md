@@ -1,60 +1,64 @@
-# INSTRUCTION.md — Running trainDronisight on the Mac M4 Pro
+# INSTRUCTION.md — trainDronisight, end to end (SSD in → trained pipeline out)
 
-A deep, do-this-then-that guide for taking this repo + the prepared data and **training, evaluating, and
-running inference on the M4 Pro (24 GB, Apple Silicon / MPS)**.
+The complete runbook for **electric-pole inspection from DJI drone imagery**: plug in the SSD,
+set up the repo, (optionally) rebuild the datasets, train the detectors, and run the four-stage
+inference pipeline. Detection + condition v1.
 
-Conventions: shell commands assume you've `cd`-ed into the repo and **activated the venv**
-(`source .venv/bin/activate`) unless stated otherwise.
+> **Your input is the SSD.** Plug the `dronisight` SSD into the M4 (mounts at
+> `/Volumes/dronisight`). It holds **both** the raw source folders **and** the prebuilt
+> training DBs, so out of the box you can skip straight to training — no data build needed.
 
 ---
 
 ## 0. Mental model (read once)
 
-- **Two machines.** Code + the one-time data build happen on the dev laptop. **All training/inference runs here on the M4 Pro.**
-- **Four subsets, four-stage pipeline.** Model 1 finds the pole; then **two** component detectors run on the cropped pole region — `component_above_1000` (the 4 frequent classes) and `component_below_1000` (the 4 rare classes); finally each detected component crop is fed to `component_classification` (the **14 condition classes**, e.g. `v_insulator_broken`). All four are **separate trainings** producing separate weights, chained only at inference (the condition stage is the optional 4th step, see Section 11).
-- **Per-annotator 6th-june data, content-hash merged.** The condition captures were labeled by 8–9 members who each annotated *different* classes over the *same* photo pool, so one physical photo lives in several member folders with only partial labels. `build_dataset` content-hash-MERGES every byte-identical copy into one entry holding the **union** of all members' boxes (and, for the condition subset, resolves objects two members labeled with conflicting conditions: defect beats normal, defect-vs-defect dropped) — preventing cross-split leakage and partial-label poisoning.
-- **No CUDA on Apple Silicon.** YOLO and Faster R-CNN train fine on **MPS**. RF-DETR-L really wants CUDA → run that one on **Colab** (Section 10). The code auto-selects `CUDA → MPS → CPU`, so the same commands work everywhere.
-- **The data is already built.** You do **not** need to re-run data-prep unless you want to change the taxonomy/preprocessing. You just point the code at the DB folders.
+- **Four-stage pipeline.** `pole` (full frame) → crop to the pole → run **two** component detectors
+  on that crop: `component_above_1000` (wire, h_insulator, v_insulator, crossarm_stright) and
+  `component_below_1000` (vegetation, top_crossarm, om_crossarm, rust) → crop each detected
+  component → `component_classification` (14 **condition** classes, e.g. `v_insulator_broken`).
+  Four separate trainings → separate weights → chained only at inference.
+- **Three model families, pick the winner.** YOLO26x and Faster R-CNN train on the M4 (MPS);
+  RF-DETR-L wants CUDA → Colab. The `Detection`/`Detector` backends are interchangeable, so any
+  stage can run any family. Keep whichever wins on **val mAP@.5**.
+- **Seven datasets.** The 4 subsets above as **full-frame** detectors, plus 3 **crop-aligned**
+  variants (`*_crop`) that train on pole/component crops so train scale == inference scale. Train
+  both and pick the val-mAP winner (the small-object ablation).
+- **Two machines.** Code + the one-time data build happen on the dev laptop; **all training /
+  inference runs on the M4 Pro (24 GB, Apple Silicon / MPS)**. Device auto-selects CUDA→MPS→CPU.
+- **The data is already built.** You only rebuild if you change taxonomy / CLAHE / split / balance.
+
+Conventions: commands assume you've `cd`-ed into the repo and **activated the venv**
+(`source .venv/bin/activate`).
 
 ---
 
-## TL;DR — full run, copy-paste (clone → train → infer)
-
-The complete happy path on the M4 with the SSD plugged in at `/Volumes/dronisight`. Each step is explained in the numbered sections below; this is the at-a-glance sequence.
+## 1. Quick start — copy-paste (clone → train → infer)
 
 ```bash
-# 1. Tools (one-time): Xcode CLT + uv
+# 1. Tools (one-time)
 xcode-select --install
-curl -LsSf https://astral.sh/uv/install.sh | sh        # restart shell after
+curl -LsSf https://astral.sh/uv/install.sh | sh           # restart shell after
 
 # 2. Code
 git clone https://github.com/arupa444/trainDronisight.git
 cd trainDronisight
 
 # 3. Python env + deps (torch-MPS, ultralytics, rfdetr, torchvision, opencv, …)
-uv venv
-source .venv/bin/activate
+uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-# 4. Point at the data. Plug the SSD in -> default path just works. (Or copy DBs local: see Section 3.)
-python -c "from shared import config; print(config.YOLO_DB)"   # sanity: prints the DB path
-pytest -q                                                       # sanity: full suite passes
+# 4. Plug the SSD in -> default paths just work. Sanity:
+python -c "from shared import config; print(config.YOLO_DB)"   # -> /Volumes/dronisight/yolo_train_db
+pytest -q                                                       # full suite passes
 
-# 5. (Optional) rebuild the DBs from raw annotations — ONLY if you changed taxonomy/CLAHE/split.
-#    Otherwise skip: the 4 subsets are already built. (Do NOT unplug the SSD mid-build.)
-python -m data_prep.build_dataset --subset all
-for s in pole component_above_1000 component_below_1000 component_classification; do
-  python -m data_prep.verify_dataset --subset "$s"; done
-
-# 6. Train all 4 YOLO detectors (the primary models; run on MPS)
+# 5. Train the 4 YOLO detectors (primary models, MPS). yolo26x@1280 may OOM on 24GB:
+#    drop --batch to 2 or use --model yolo26l.pt / yolo26m.pt.
 python -m train_yolo.train_pole       --version clahe --epochs 100 --imgsz 640  --batch 4 --model yolo26x.pt
 python -m train_yolo.train_components --subset component_above_1000    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
 python -m train_yolo.train_components --subset component_below_1000    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
 python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
-#    (yolo26x at 1280 may OOM on 24 GB -> drop --batch to 2 or use --model yolo26l.pt / yolo26m.pt)
-#    Comparison families: Faster R-CNN (Section 9, MPS) and RF-DETR-L (Section 10, Colab).
 
-# 7. Full 4-stage inference (pole -> above+below on the crop -> condition on each component crop)
+# 6. Full 4-stage inference
 python -m inference.pipeline --image some.jpg \
   --pole-weights        runs/pole/yolo/weights/best.pt \
   --comp-above-weights  runs/component_above_1000/yolo/weights/best.pt \
@@ -63,225 +67,211 @@ python -m inference.pipeline --image some.jpg \
   --out runs/inference/result.json
 ```
 
----
-
-## 1. Prerequisites
-
-1. **macOS** on the M4 Pro, plugged into power.
-2. **Xcode command-line tools:** `xcode-select --install` (for git, compilers).
-3. **uv** (Python manager — this project uses `uv`, never bare `pip`):
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-   Restart the shell, confirm: `uv --version`.
-4. **git** (comes with the CLT above).
+Everything below explains each step and the comparison models / crop ablation.
 
 ---
 
-## 2. Get the code
+## 2. Prerequisites
+
+1. **macOS** on the M4 Pro, plugged into power (disable Low Power Mode — the GPU throttles on battery).
+2. **Xcode CLT:** `xcode-select --install`.
+3. **uv** (this project uses `uv`, never bare `pip`): `curl -LsSf https://astral.sh/uv/install.sh | sh`, then restart the shell and confirm `uv --version`.
+4. **git** (ships with the CLT).
+
+## 3. Get the code
 
 ```bash
 git clone https://github.com/arupa444/trainDronisight.git
 cd trainDronisight
 ```
-(Private repo — authenticate with `gh auth login` or a GitHub token if prompted.)
 
----
+## 4. Python environment
 
-## 3. Get the data onto the M4
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"   # expect True
+pytest -q                                                                              # full suite passes
+```
+If `MPS available: False`, you're on an Intel Mac or an old torch — reinstall torch ≥ 2.2.
 
-The two DB folders (`yolo_train_db`, `RF_DETR_Faster_RCNN_train_db`) were built on the SSD. Pick **one**:
+## 5. Point the code at the SSD
 
-### Option A — plug the SSD into the M4 (simplest)
-If the external `dronisight` SSD is mounted at `/Volumes/dronisight`, the default paths just work. **Skip the `export` below.**
+`shared/config.py` reads everything off the root in `DRONISIGHT_DATA` (default `/Volumes/dronisight`).
 
-### Option B — copy the DBs to fast local storage (recommended for training speed)
-Local SSD I/O beats the external drive. Copy **only the two DBs** and **exclude macOS AppleDouble junk**:
+### Option A — run straight off the SSD (simplest)
+Plug it in. The defaults resolve to `/Volumes/dronisight/{yolo_train_db, RF_DETR_Faster_RCNN_train_db}`
+and the raw source folders. **Nothing to set.** (Training I/O is slower over USB, but it works.)
+
+### Option B — copy the DBs to local NVMe (faster training, avoids exFAT hiccups — recommended)
 ```bash
 mkdir -p ~/dronisight_data
 rsync -a --exclude '._*' --exclude '.DS_Store' \
   /Volumes/dronisight/yolo_train_db \
   /Volumes/dronisight/RF_DETR_Faster_RCNN_train_db \
   ~/dronisight_data/
+export DRONISIGHT_DATA=~/dronisight_data          # put in ~/.zshrc; verify with the print below
+python -c "from shared import config; print(config.YOLO_DB)"
 ```
-Then tell the code where the data lives (this overrides the default `/Volumes/dronisight`):
-```bash
-export DRONISIGHT_DATA=~/dronisight_data
-```
-> Put that `export` in your `~/.zshrc` so every shell sees it. Verify:
-> ```bash
-> python -c "from shared import config; print(config.YOLO_DB)"
-> # -> /Users/you/dronisight_data/yolo_train_db
-> ```
+> ⚠️ The SSD is **exFAT** → macOS scatters `._*` AppleDouble sidecars. The code filters them and
+> the build self-cleans them, but `--exclude '._*'` on copy keeps counts honest. **Don't unplug or
+> let the SSD sleep during a build** — a mid-write disconnect corrupts the run.
 
-⚠️ **The `--exclude '._*'` matters.** The SSD is exFAT, so macOS scatters `._*` sidecar files. The code filters them, but excluding them on copy keeps the dataset clean and your image counts honest.
+## 6. (Optional) Rebuild the datasets from raw annotations
 
----
-
-## 4. Python environment
+Only if you change class policy / CLAHE / split / balance / crop logic. The DBs are otherwise ready.
 
 ```bash
-uv venv
-source .venv/bin/activate
-uv pip install -e ".[dev]"
-```
-This installs torch (MPS build), torchvision, ultralytics, rfdetr, opencv, etc.
+python -m data_prep.build_dataset --subset all          # 4 full-frame base subsets, into both DBs
+python -m data_prep.build_dataset --subset all_crop     # the 3 crop-aligned variants
+# (or `--subset all_both` for all 7; or a single subset name)
 
-**Sanity checks:**
-```bash
-python -c "import torch; print('MPS available:', torch.backends.mps.is_available())"   # expect True
-pytest -q                                                                              # expect the full suite to pass
+for s in pole component_above_1000 component_below_1000 component_classification \
+         component_above_1000_crop component_below_1000_crop component_classification_crop; do
+  python -m data_prep.verify_dataset --subset "$s"      # group + image-content leakage + label validity
+done
 ```
 
-If `MPS available: False`, you're likely on an Intel Mac or an old torch — reinstall torch ≥ 2.2.
+What the build does (the non-obvious parts):
+- **VOC XML is the label source of truth** (`shared/labels.py`); index-based YOLO `.txt` in the raw
+  data is ignored. All names are normalized to canonical classes; unknown → dropped.
+- **Per-annotator merge.** The 6th-june condition data was labeled by 8–9 members who each annotated
+  *different* classes over the *same* photo pool. `build_dataset` content-hash-**merges** every
+  byte-identical copy into one entry holding the **union** of all members' boxes — preventing
+  cross-split leakage and partial-label poisoning. No-op on the disjoint mem captures.
+- **Condition-conflict resolution** (condition subset): when two members gave one object different
+  conditions, **defect beats normal**; a defect-vs-defect disagreement is **dropped** as ambiguous.
+- **Balance per subset** (TRAIN only; val/test stay raw): `above` caps toward the rarest class
+  (`v_insulator`); `below` oversamples rare classes up with bbox-aware augmentation; `classification`
+  targets **400/class** (cap big classes down, augment small ones up).
+- **orig + clahe variants.** Every image is stored twice — untouched and with adaptive CLAHE
+  (LAB L-channel, per-image clip from an exposure profile). Train both, keep the val-mAP winner.
+- **Leakage-safe splits.** Frames are grouped into capture sequences (>60 s gap = new group) and
+  split by group, stratified per source. `verify_dataset` asserts no group spans splits **and**
+  re-hashes the written DB to assert no physical photo appears in >1 split.
+- **Crop-aligned variants** (`*_crop`): see §8.
 
----
+## 7. The datasets (what you train on)
 
-## 5. (Optional) Rebuild the data from raw annotations
+Two parallel DBs, same splits: `yolo_train_db/` (YOLO `.txt`, primary) and
+`RF_DETR_Faster_RCNN_train_db/` (COCO JSON, for Faster R-CNN + RF-DETR). Each holds all 7 subsets.
+Approximate current build sizes (train / val / test images):
 
-**Only if** you changed the class policy, CLAHE, or split logic. Requires the raw source folders present under `DRONISIGHT_DATA` — the **11 mem-captures** (`mem2 5th june, mem3…mem8, mem 7.1 5th june, mem10, 4thJuneMem4, 4thJuneMem8`) feed pole/components, and the **8 `6thMem*AllTeam1` folders** under `6th june ` feed `component_classification` (the exact lists are `config._SOURCE_FOLDER_NAMES` + `config._CONDITION_FOLDER_NAMES`). Otherwise skip — the DBs are ready.
+| Subset | classes | scale | size | balance |
+|---|---|---|---|---|
+| `pole` | 1 | full frame | 1692 / 425 / 89 | n/a |
+| `component_above_1000` | 4 frequent | full frame | 1314 / 281 / 97 | cap→rarest |
+| `component_below_1000` | 4 rare | full frame | 1375 / 191 / 42 | oversample |
+| `component_classification` | 14 condition | full frame | 2433 / 389 / 122 | target-400 |
+| `component_above_1000_crop` | 4 frequent | **pole crop** | 1399 / 302 / 88 | cap→rarest |
+| `component_below_1000_crop` | 4 rare | **pole crop** | 1431 / 208 / 59 | oversample |
+| `component_classification_crop` | 14 condition | **component crop** | 5101 / 1072 / 270 | target-400 |
+
+YOLO weights land at `runs/<subset>/yolo/weights/best.pt`.
+
+## 8. Preprocessing (already correct — what it does)
+
+- **CLAHE** on the **LAB L-channel only** (chroma untouched → no color shift), adaptive clip per
+  image from the exposure profile. Verified **byte-exact** between the stored `clahe` training
+  variant and what inference produces from the raw frame.
+- **EXIF orientation** applied at build and inference (`load_oriented_bgr`); stored dims match the XML.
+- **Crop-aligned (`*_crop`) subsets** close the train/serve **scale gap**: the component/condition
+  detectors run on crops at inference but were trained on full ~4000×3000 frames. `*_crop` builds
+  crop each frame to the **pole** box (above/below) or the **component** box (condition) and remap
+  the boxes, so train scale == inference scale. CLAHE is applied to the **full frame then sliced**
+  (identical to inference). Crops of one photo all share its capture group → never split across
+  train/val/test. **Train both full-frame and crop, keep the val-mAP winner** (helps thin wires /
+  small insulators most).
+
+## 9. Train — YOLO26x (M4 / MPS, primary)
 
 ```bash
-python -m data_prep.build_dataset --subset all          # builds all 4 full-frame subsets into both DBs
-python -m data_prep.build_dataset --subset all_crop     # (optional) the 3 crop-aligned variants for the ablation
-python -m data_prep.verify_dataset --subset pole        # group + image-content leakage + label-validity gate
-python -m data_prep.verify_dataset --subset component_above_1000
-python -m data_prep.verify_dataset --subset component_below_1000
-python -m data_prep.verify_dataset --subset component_classification
-```
-Useful flags: `--no-balance` (keep all images, skip the class cap — pair with `sample_weights.csv` at train time).
-Each run self-cleans AppleDouble sidecars and prints split sizes + any skipped (EXIF-mismatch / unparseable) files.
+# full-frame detectors (train in this order)
+python -m train_yolo.train_pole       --version clahe --epochs 100 --imgsz 640  --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_above_1000    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_below_1000    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
 
-**Builds 4 subsets** (`pole`, `component_above_1000`, `component_below_1000`, `component_classification`). Key data-prep behavior:
-- **Content-hash cross-folder merge** (`data_prep/merge_annotations.py`, `config.MERGE_CROSS_FOLDER`): every byte-identical photo copy collapses into one entry with the **union** of all members' boxes, *before* grouping/splitting. This fixes the per-annotator 6th-june data (same photo, partial labels, in many folders) and subsumes the old `mem7`/`mem7.1` dedup; it's a no-op on disjoint captures. Measured on the condition build: 3641 copies → 2301 unique images, +2469 boxes recovered.
-- **Condition-conflict resolution** (`config.RESOLVE_CONDITION_CONFLICTS`, `component_classification` only): when members gave one physical object different condition labels, **defect beats normal** and a **defect-vs-defect** disagreement is **dropped** as ambiguous.
-- **Balancing differs per subset:** `component_above_1000` is balance-capped toward the rarest class (`v_insulator`); `component_below_1000` keeps all images and **oversamples** its train split with augmentation; `component_classification` uses a **fixed per-class target** (`config.BALANCE_TARGET = 400`): on **train** each class is capped DOWN to 400 and under-target classes are augmented UP toward 400, while **val/test stay raw**.
-- **`verify_dataset` asserts BOTH** no capture-group leakage **and** no image-**content** leakage (it re-hashes the written DB and fails if any photo appears in >1 split), then prints the unique-image count and validates every YOLO label.
-
----
-
-## 6. Train Model 1 — pole detector (YOLO26x, MPS)
-
-```bash
-python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 640 --batch 4
-```
-- `--version {orig,clahe}` — which image variant to train on (train both, compare).
-- `--model` — preferred weights (default `yolo26x.pt`). Use `--model yolo26m.pt` (or `yolo26l.pt`) if `yolo26x` runs out of MPS memory; for a 1-class, big-object task on ~1000 images the medium model is faster and generalizes just as well.
-- **`imgsz 640` is deliberate:** poles fill most of the frame, so 640 detects them fine and uses ~¼ the memory of 1280. (Save the high res for the *component* model.)
-- It prints whether it's using **`yolo26x`** or fell back to **`yolo11x`** (fallback is normal if YOLO26 weights aren't fetchable on your Ultralytics version — not an error).
-- **Output:** `runs/pole/yolo/weights/best.pt` (and `last.pt`). Re-runs go to `runs/pole/yolo2/…`.
-- **Sanity check the scan line:** it must say `<N> images, 0 backgrounds` (e.g. `1387 images` for the pole train split). If it says `0 images, 1387 backgrounds`, labels aren't being found — see Troubleshooting.
-
-**MPS OOM?** lower `--batch` (4→2), lower `--imgsz`, or switch `--model yolo26m.pt`.
-
-## 7. Train Model 2 — the two component detectors
-
-```bash
-# 2a) the 4 frequent classes (wire, h_insulator, v_insulator, crossarm_stright)
-python -m train_yolo.train_components --subset component_above_1000 --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
-# 2b) the 4 rare classes (vegetation, top_crossarm, om_crossarm, rust); train split is oversampled
-python -m train_yolo.train_components --subset component_below_1000 --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26m.pt
-# 2c) the 14 CONDITION classes (runs on the component crop at inference); train balanced to ~400/class
-python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
-```
-- **Keep `imgsz 1280`** here — components include thin wires that vanish at low res.
-- **`component_classification`** is the 4th-stage condition model: it detects condition classes (normal/band/broken/chip_off/…) on the **component crop**, not the pole. Output: `runs/component_classification/yolo/weights/best.pt`.
-
-**Crop-aligned ablation (recommended for the small classes).** The three component/condition detectors are trained on full frames but *run on crops* at inference (above/below on the pole crop, condition on the component crop). To close that spatial-scale gap, build the `<base>_crop` subsets (`build_dataset --subset all_crop`) and train them too — they crop each frame to the pole/component region so train scale == serve scale:
-```bash
+# crop-aligned ablation (same flags, _crop subsets). Compare each to its full-frame twin on val mAP.
 python -m train_yolo.train_components --subset component_above_1000_crop    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
 python -m train_yolo.train_components --subset component_below_1000_crop    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
 python -m train_yolo.train_components --subset component_classification_crop --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
 ```
-Compare each crop model's **val mAP** against its full-frame twin and run whichever wins in the pipeline (the weights paths are `runs/<subset>_crop/yolo/weights/best.pt`). Expect the crop models to help most on thin wires and small insulators.
-- **`yolo26x` at 1280 will likely OOM on 24 GB** → use `--model yolo26m.pt` (recommended) or `yolo26l.pt`, and/or `--batch 2`.
-- **Output:** `runs/component_above_1000/yolo/weights/best.pt` and `runs/component_below_1000/yolo/weights/best.pt`.
-- `component_below_1000` is the harder one (genuinely scarce classes); give it more epochs. Its train split is already offline-oversampled to equalize classes, and `train_args.py` adds stronger online aug on top.
-- Always check **per-class AP** in the run's results (don't trust the single mAP) — Ultralytics writes a `results.csv` and PR curves under the run dir. Evaluate on the (un-augmented) val/test.
+- **`imgsz 640` for pole** (it fills the frame) — saves ~¾ the memory vs 1280. **`imgsz 1280` for
+  components** — thin wires vanish at low res.
+- **OOM on 24 GB?** `yolo26x@1280` is the usual culprit → use `--model yolo26l.pt` / `yolo26m.pt`
+  (also the main anti-overfit lever on this small data) and/or `--batch 2`.
+- **`yolo26x → yolo11x` fallback** is a printed warning (YOLO26 weights not fetchable on your
+  Ultralytics), **not an error**.
+- Train **both `--version clahe` and `--version orig`**; compare on val mAP. Watch the train/val gap
+  in `runs/<subset>/yolo/results.png`; report **per-class AP**, not just mAP.
 
----
+## 10. Train — Faster R-CNN (M4 / MPS, comparison)
 
-## 8. Get 100% out of the M4 (sustainably)
-
-- **Always plugged in**, and disable Low Power Mode (System Settings → Battery). On battery the GPU throttles hard.
-- **Watch utilization:** Activity Monitor → Window → **GPU History**, and `sudo powermetrics --samplers gpu_power -i1000` for GPU residency/Watts. Aim for high, steady GPU use — not thermal-throttled spikes.
-- **Batch is the main lever.** Push `--batch` up until memory (`mactop`/Activity Monitor "Memory") is ~80–85 % used or you OOM, then back off one step. Bigger batch = better MPS utilization.
-- **Dataset caching:** Ultralytics caches images to RAM by default when it fits 24 GB; if you see RAM pressure, the dataset is large — let it use disk cache instead (it falls back automatically).
-- **Don't chase a literal 100 % GPU number** — a pegged laptop GPU just thermal-throttles. The real goal is fastest *converging* training: tune `batch`/`imgsz`, keep it cool, keep it plugged in.
-- Close other heavy apps; MPS shares the 24 GB unified memory with the whole system.
-
----
-
-## 9. Comparison models (optional)
-
-### Faster R-CNN (torchvision, runs on MPS — slower than YOLO)
 ```bash
-python -m train_faster_rcnn.train --subset pole                   --version clahe --epochs 30 --batch 2
-python -m train_faster_rcnn.train --subset component_above_1000   --version clahe --epochs 30 --batch 2
-python -m train_faster_rcnn.train --subset component_below_1000   --version clahe --epochs 30 --batch 2
+python -m train_faster_rcnn.train --subset pole                    --version clahe --epochs 30 --batch 2
+python -m train_faster_rcnn.train --subset component_above_1000    --version clahe --epochs 30 --batch 2
+python -m train_faster_rcnn.train --subset component_below_1000    --version clahe --epochs 30 --batch 2
 python -m train_faster_rcnn.train --subset component_classification --version clahe --epochs 60 --batch 2
-# downloads COCO-pretrained ResNet50-FPN weights on first run (needs network)
-# output: runs/{subset}/faster_rcnn/{last.pt,best.pt}  -- best.pt = lowest val loss (--patience 7 early stop)
+# per-class AP (use the SAME --min-size you trained with):
+python -m train_faster_rcnn.eval  --subset component_above_1000    --version clahe --split test
 ```
-- **`--min-size` defaults to 2000** (torchvision's default 800 shrinks thin wires/insulators away); keep it high. Lower it only if you OOM.
-- **Per-class AP:** `python -m train_faster_rcnn.eval --subset <s> --version clahe --split test` (uses `best.pt`; pass the **same `--min-size`** you trained with).
+- **`--min-size` defaults to 2000** (torchvision's default 800 shrinks thin wires away). `best.pt`
+  (lowest val loss, `--patience 7` early stop) is the checkpoint to use. Output:
+  `runs/<subset>/faster_rcnn/{best,last}.pt`. First run downloads COCO-pretrained weights.
 
-### RF-DETR-L (use Colab / CUDA — impractical on MPS)
-Locally it will warn and try MPS; for a real run use the Colab notebook (Section 10):
+## 11. Train — RF-DETR-L (Colab / CUDA, comparison)
+
+Impractical on MPS — use the `03_train_rf_detr` Colab notebook (see §15).
 ```bash
-python -m train_rf_detr.train --subset pole                   --version clahe --epochs 50 --batch 4 --resolution 672
-python -m train_rf_detr.train --subset component_above_1000   --version clahe --epochs 50 --batch 4 --resolution 672
-python -m train_rf_detr.train --subset component_below_1000   --version clahe --epochs 50 --batch 4 --resolution 672
+python -m train_rf_detr.train --subset pole                    --version clahe --epochs 50 --batch 4 --resolution 672
+python -m train_rf_detr.train --subset component_above_1000    --version clahe --epochs 50 --batch 4 --resolution 672
+python -m train_rf_detr.train --subset component_below_1000    --version clahe --epochs 50 --batch 4 --resolution 672
 python -m train_rf_detr.train --subset component_classification --version clahe --epochs 50 --batch 8 --resolution 1120
-# output: runs/{subset}/rfdetr/checkpoint_best_ema.pth
 ```
-- **`--resolution` must be a multiple of the model's block_size** (`patch_size*num_windows`, read from the installed lib: **32** on the current RF-DETR build, 56 on older ones). **672 / 896 / 1120** are multiples of *both* 32 and 56, so they're safe across versions and need no inference-shape rounding. Raise it (1120) for more small-object detail if the GPU has memory.
+- `--resolution` must be a multiple of the model **block_size** (`patch_size*num_windows` = **32** on
+  the current RF-DETR build). **672 / 896 / 1120** are multiples of *both* 32 and 56, so they're safe
+  across versions and need no inference-shape rounding. Output:
+  `runs/<subset>/rfdetr/checkpoint_best_ema.pth`.
 
----
+## 12. Choosing the final per-stage model
 
-## 10. Colab path (CUDA — best for RF-DETR, faster for all)
+For **each stage**, compare across the axes and keep one checkpoint:
+1. **Family:** YOLO vs Faster R-CNN vs RF-DETR (val mAP@.5).
+2. **Variant:** `clahe` vs `orig`.
+3. **Scale:** full-frame vs `_crop`.
+Report **per-class AP** (a good mAP hides thin wires / rare conditions). Tune the confidence
+threshold on **val**, freeze it, touch **test** once. Rare classes like `rust` have tiny test sets
+(n≈3) — judge them on val and on recall.
 
-➡️ **Full Colab + Google-Drive walkthrough: [`colab_instruction.md`](colab_instruction.md).** Quick version:
+## 13. Inference
 
-Notebooks are **generated** from `notebooks/build_notebooks.py` — edit the spec there, never the `.ipynb` by hand. `REPO_URL` is already set to `https://github.com/arupa444/trainDronisight.git` (only re-edit + regenerate if you fork/move the repo).
-
-1. **Upload the DBs to Google Drive** as zips at `MyDrive/dronisight/`:
-   ```bash
-   (cd ~/dronisight_data && zip -rqX yolo_train_db.zip yolo_train_db -x '*/._*' \
-      && zip -rqX RF_DETR_Faster_RCNN_train_db.zip RF_DETR_Faster_RCNN_train_db -x '*/._*')
-   # then upload both .zip to Google Drive: MyDrive/dronisight/
-   ```
-2. In Colab open the notebook, **Runtime → Change runtime type → GPU**, then **Run all**:
-   - `00_data_prep` (verify), `01_train_yolo`, `02_train_faster_rcnn`, `03_train_rf_detr`, `04_inference_pipeline`.
-   - Each trainer copies `runs/` (weights + plots) to `MyDrive/dronisight/runs/` at the end; `04` restores it. See `colab_instruction.md` for the Drive layout and save/restore details.
-
----
-
-## 11. Inference
-
-### Single model (debugging)
+### Single stage (debugging; YOLO CLIs)
 ```bash
 python -m inference.infer_pole       --image some.jpg --weights runs/pole/yolo/weights/best.pt --conf 0.25
 python -m inference.infer_components  --image crop.jpg --weights runs/component_above_1000/yolo/weights/best.pt --conf 0.25
 ```
-(`infer_components` is generic YOLO — point `--weights` at any component or condition model.)
 
-### Full pipeline (the real thing)
+### Full four-stage pipeline
 ```bash
 python -m inference.pipeline \
   --image some.jpg \
-  --pole-weights runs/pole/yolo/weights/best.pt \
-  --comp-above-weights runs/component_above_1000/yolo/weights/best.pt \
-  --comp-below-weights runs/component_below_1000/yolo/weights/best.pt \
-  --condition-weights runs/component_classification/yolo/weights/best.pt \
-  --pole-pad 0.05 \
-  --crop-dir runs/inference/crops \
-  --out runs/inference/result.json
+  --pole-weights        runs/pole/yolo/weights/best.pt \
+  --comp-above-weights  runs/component_above_1000/yolo/weights/best.pt \
+  --comp-below-weights  runs/component_below_1000/yolo/weights/best.pt \
+  --condition-weights   runs/component_classification/yolo/weights/best.pt \
+  --crop-dir runs/inference/crops --out runs/inference/result.json
 ```
-- Both component detectors run on the **pole crop**; their boxes are remapped to the full frame. **Preprocessing matches training:** EXIF-orient + CLAHE are applied **once** on the full frame and inherited by every crop. Pass `--no-clahe` only for `orig`-trained weights. Default imgsz mirrors training (pole 640, components 1280).
-- **Stage 4 (optional):** add `--condition-weights …` and each detected component also carries a `conditions` list (the 14-class condition model run on its crop). Omit it to stop at detection.
-- **Confidence defaults:** `--pole-conf 0.12` (recall-leaning — don't miss poles), `--comp-conf 0.25`, `--condition-conf 0.25`.
-- **Mixed backends:** each stage takes `--pole-backend / --comp-above-backend / --comp-below-backend / --condition-backend {yolo,rfdetr,frcnn}`; point the matching `*-weights` at that family's checkpoint. RF-DETR stages share `--rfdetr-resolution` (a block_size multiple, e.g. 672/1120). Example — YOLO pole, RF-DETR components:
+- **Preprocessing matches training:** EXIF-orient + CLAHE applied **once** on the full frame; every
+  crop inherits it. Pass `--no-clahe` only for `orig`-trained weights.
+- **Stage 4 is optional:** omit `--condition-weights` to stop at component detection.
+- **Confidence defaults:** `--pole-conf 0.12` (recall-leaning), `--comp-conf 0.25`,
+  `--condition-conf 0.25`. **imgsz:** `--pole-imgsz 640`, `--comp-imgsz 1280`, `--condition-imgsz 1280`.
+  `--pole-pad 0.05` keeps edge components from being clipped.
+- **Mixed backends:** every stage takes `--pole-backend / --comp-above-backend /
+  --comp-below-backend / --condition-backend {yolo,rfdetr,frcnn}`; point the matching `*-weights` at
+  that family's checkpoint. RF-DETR stages share `--rfdetr-resolution` (672/1120); FRCNN stages share
+  `--frcnn-min-size` (default 2000 — **must match training** or small objects collapse). Example:
   ```bash
   python -m inference.pipeline --image some.jpg \
     --pole-backend yolo  --pole-weights runs/pole/yolo/weights/best.pt \
@@ -289,71 +279,54 @@ python -m inference.pipeline \
     --comp-below-backend rfdetr --comp-below-weights runs/component_below_1000/rfdetr/checkpoint_best_ema.pth \
     --rfdetr-resolution 672 --out runs/inference/result.json
   ```
-- `--pole-pad 0.05` adds a 5 % margin around the pole crop so components on the pole edge aren't clipped. Set `0.0` for a tight crop.
-- **Output JSON shape:**
+- **Output JSON** (`conditions` present only with `--condition-weights`):
   ```json
-  {
-    "image": "some.jpg",
-    "poles": [
-      {
-        "box": [x1,y1,x2,y2], "confidence": 0.97, "crop_path": "runs/inference/crops/some_pole0.jpg",
-        "components_above": [
-          { "class": "v_insulator", "confidence": 0.88,
-            "box_full": [x1,y1,x2,y2], "box_crop": [x1,y1,x2,y2],
-            "crop_path": "runs/inference/crops/some_pole0_above_comp0.jpg",
-            "conditions": [ { "class": "v_insulator_broken", "confidence": 0.71, "box_comp": [x1,y1,x2,y2] } ] }
-        ],
-        "components_below": [ { "class": "vegetation", "confidence": 0.41, "box_full": [x1,y1,x2,y2], "box_crop": [x1,y1,x2,y2], "crop_path": "…_below_comp0.jpg" } ]
-      }
-    ]
-  }
+  { "image": "some.jpg", "poles": [ {
+      "box": [x1,y1,x2,y2], "confidence": 0.97, "crop_path": "…/some_pole0.jpg",
+      "components_above": [ { "class": "v_insulator", "confidence": 0.88,
+          "box_full": [..], "box_crop": [..], "crop_path": "…_above_comp0.jpg",
+          "conditions": [ { "class": "v_insulator_broken", "confidence": 0.71, "box_comp": [..] } ] } ],
+      "components_below": [ { "class": "vegetation", "confidence": 0.41, "box_full": [..], "box_crop": [..], "crop_path": "…_below_comp0.jpg" } ]
+  } ] }
   ```
-  `box_full` = full-frame coords (for drawing on the original); `box_crop` = coords within the pole crop; `conditions` is present only when `--condition-weights` is given (`box_comp` = coords within the component crop).
+  `box_full` = original-frame coords; `box_crop` = within the pole crop; `box_comp` = within the component crop.
 
----
+## 14. Get the most out of the M4 (sustainably)
 
-## 12. Evaluation discipline (per the design spec)
+- Plugged in, Low Power Mode **off**. Watch GPU: Activity Monitor → Window → GPU History, or
+  `sudo powermetrics --samplers gpu_power -i1000`.
+- **Batch is the main lever** — push `--batch` until ~80–85 % memory, then back off one step. Bigger
+  batch = better MPS utilization. Lower `--imgsz` or use a smaller `--model` if you OOM.
+- Don't chase a literal 100 % GPU — a pegged laptop GPU just thermal-throttles. Goal = fastest
+  *converging* run, kept cool and plugged in. Close other heavy apps (MPS shares the 24 GB).
 
-- Tune the **confidence threshold on val**, then freeze it; touch the **test split only once** at the end.
-- Report **per-class AP**, not just mAP — `crossarm_stright` and small parts hide behind a good average.
-- Run the **end-to-end** metric (`pole→crop→components`) to confirm the two-stage crop actually helps vs running Model 2 on full frames. The `--pole-pad` flag is your knob for that ablation.
-- Compare **`orig` vs `clahe`** trainings — CLAHE is a hypothesis, not a guarantee; keep whichever wins on val.
+## 15. Colab path (CUDA — required for RF-DETR, faster for all)
 
----
+Notebooks are **generated** from `notebooks/build_notebooks.py` (`REPO_URL` already set) — edit the
+spec, never the `.ipynb`, then `python -m notebooks.build_notebooks`. Full walkthrough:
+[`colab_instruction.md`](colab_instruction.md).
+1. Zip the two DBs to `MyDrive/dronisight/` (exclude `._*`).
+2. Open a notebook → **Runtime → Change runtime type → GPU** → **Run all**:
+   `00_data_prep` (verify), `01_train_yolo` (incl. the optional `_crop` ablation cells),
+   `02_train_faster_rcnn`, `03_train_rf_detr` (`--resolution` 672/1120), `04_inference_pipeline`.
+   Each trainer copies `runs/` back to Drive (Colab runtimes are ephemeral); `04` restores it.
 
-## 13. Troubleshooting
+## 16. Troubleshooting
 
-| Symptom | Cause / Fix |
+| Symptom | Cause / fix |
 |---|---|
-| Scan says **`0 images, N backgrounds`** / "Labels are missing or empty" | YOLO can't find the labels: they must mirror the image variant dir (`labels/<split>/<orig\|clahe>/`). **Fixed in current code** — `git pull` and rebuild, **or** patch existing data in place: see snippet below this table. Always `find <DB> -name '*.cache' -delete` afterward (a poisoned cache reports 0 labels even after fixing). |
-| Training **scans a different path** than your data (e.g. reads `/Volumes/dronisight/…` even with `DRONISIGHT_DATA` set) | The `data.yaml` has an absolute `path:` baked in at build time. **Fixed in current code** — the trainer regenerates the yaml to the current DB location on each run. `git pull`, then `find "$DRONISIGHT_DATA/yolo_train_db" -name '*.cache' -delete` and re-run. |
-| `MPS backend out of memory` | Lower `--batch` (4→2), lower `--imgsz`, or use a lighter `--model yolo26m.pt`. Close other apps. Keep plugged in. |
-| Training is on CPU, not GPU | `torch.backends.mps.is_available()` is False → reinstall torch ≥ 2.2 in the venv (`uv pip install -e ".[dev]"`). |
-| "using yolo11x fallback weights" warning | Expected if YOLO26 weights aren't fetchable on your Ultralytics version. Harmless; update `ultralytics` if you specifically want YOLO26. |
-| Errors reading `._*.jpg` / weird image counts | exFAT AppleDouble sidecars. Re-copy with `rsync --exclude '._*'`, or `find <DB> -name '._*' -delete`. The pipeline filters them, but clean data is best. |
-| `verify_dataset` UnicodeDecode / leakage error | Re-run `data_prep.build_dataset` (it self-cleans + re-splits deterministically), then re-verify. |
-| First Faster R-CNN run stalls | It's downloading COCO-pretrained weights (~160 MB). Needs network; cached after. |
-| `FileNotFoundError` on a DB path | `DRONISIGHT_DATA` isn't set/exported, or points at the wrong folder. `echo $DRONISIGHT_DATA` and re-check Section 3. |
-| RF-DETR painfully slow / unstable on MPS | Expected — use the Colab GPU notebook (Section 10). |
+| Scan says **`0 images, N backgrounds`** | YOLO can't find labels — they must mirror the variant dir (`labels/<split>/<orig\|clahe>/`). Fixed in current code; after any fix `find <DB> -name '*.cache' -delete` (a poisoned cache reports 0 even after fixing). |
+| Training reads a **different path** than your data | `data.yaml` had a build-machine absolute `path:`; the trainer regenerates it each run. `git pull`, delete `*.cache`, re-run. |
+| `MPS backend out of memory` | Lower `--batch` (4→2), lower `--imgsz`, or `--model yolo26m.pt`. Close apps; stay plugged in. |
+| Build produced **2× / duplicated images**, or counts look wrong | The SSD disconnected mid-build (check `mount \| grep dronisight` device id changes). Re-mount, **don't unplug**, clear the subset dir and rebuild; `verify_dataset` will confirm no leakage. |
+| Errors reading `._*.jpg` / weird counts | exFAT AppleDouble sidecars — `rsync --exclude '._*'` or `find <DB> -name '._*' -delete`. The build self-cleans them. |
+| First Faster R-CNN run stalls | Downloading COCO-pretrained weights (~160 MB). Cached after. |
+| RF-DETR `resolution ... not divisible` | Use a multiple of 32 (672/896/1120). |
+| `FileNotFoundError` on a DB path | `DRONISIGHT_DATA` unset/wrong, or SSD not mounted. `echo $DRONISIGHT_DATA`, re-check §5. |
 
-**Patch already-built data in place** (if you copied DBs built before the label-layout fix — no rebuild needed):
-```bash
-DB=/Volumes/dronisight/yolo_train_db          # or $DRONISIGHT_DATA/yolo_train_db
-for sub in pole component_above_1000 component_below_1000 component_classification; do
-  for split in train val test; do
-    s="$DB/$sub/labels/$split"
-    for v in orig clahe; do mkdir -p "$s/$v"; cp "$s"/*.txt "$s/$v"/ 2>/dev/null; done
-  done
-done
-find "$DB" -name "*.cache" -delete
-```
+## 17. What's NOT here yet
 
----
-
-## 14. What's NOT here yet (so you don't go looking)
-
-The **condition classifier now exists** — `component_classification` (14 condition classes) is trained like the other detectors and runs as the optional 4th pipeline stage (`--condition-weights`, Section 11). Still deliberately future work:
-- **Point/scoring system** per pole (aggregate the per-component conditions into a pole health score).
-- **Report + OpenStreetMap** UI (UUID from lat/long → map pin → detail page).
-
-The drone EXIF already carries GPS, so lat/long is available to wire up when those stages begin.
+The condition classifier **exists** (`component_classification`, the optional 4th pipeline stage).
+Still future work:
+- **Per-pole scoring** — aggregate the per-component conditions into a pole health score.
+- **Report + OpenStreetMap UI** — UUID (from the drone EXIF GPS) → map pin → per-pole detail page.
