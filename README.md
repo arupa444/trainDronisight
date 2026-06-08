@@ -34,6 +34,7 @@ image ─▶ Model 1 (pole detector, full frame)
 ## Where to start
 
 ➡️ **Read [`INSTRUCTION.md`](INSTRUCTION.md)** — the deep, step-by-step guide for running everything on the **Mac M4 Pro** (data, setup, training, inference, Colab, troubleshooting, M4 tuning).
+➡️ **On Windows + NVIDIA CUDA?** Use [`windows_instruction.md`](windows_instruction.md) — CUDA-specific setup (incl. the CUDA-wheel install + `DRONISIGHT_DATA` drive-letter), with all three families (incl. RF-DETR-L) training locally.
 
 Quick version:
 ```bash

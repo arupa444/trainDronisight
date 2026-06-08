@@ -7,6 +7,9 @@ inference pipeline. Detection + condition v1.
 > **Your input is the SSD.** Plug the `dronisight` SSD into the M4 (mounts at
 > `/Volumes/dronisight`). It holds **both** the raw source folders **and** the prebuilt
 > training DBs, so out of the box you can skip straight to training — no data build needed.
+>
+> **On Windows + NVIDIA CUDA?** Use [`windows_instruction.md`](windows_instruction.md) instead —
+> same project, CUDA-specific setup, and all three families (incl. RF-DETR-L) train locally.
 
 ---
 
