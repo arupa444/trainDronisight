@@ -20,6 +20,7 @@ from data_prep.grouping import assign_groups
 from data_prep.split import grouped_split
 from data_prep.balance import select_balanced, sample_weights
 from data_prep.dedup import drop_duplicate_annotations
+from data_prep.merge_annotations import merge_by_image_identity
 from data_prep.oversample import plan_oversample, augment_image
 from data_prep.profile_images import profile_array
 from data_prep.preprocess import load_oriented_bgr, clahe_params_from_profile, apply_clahe
@@ -116,6 +117,15 @@ def build_subset(subset: str, balance: bool):
     # dedup re-annotated images shared across configured folder pairs (e.g. mem7 / mem 7.1)
     parsed, n_dedup = drop_duplicate_annotations(parsed, config.DEDUP_PAIRS)
 
+    # Collapse byte-identical copies of one physical image into ONE entry holding the
+    # UNION of all copies' boxes (keyed on content hash). Critical for the per-annotator
+    # 6th-june data (same photo in several member folders, each with only partial labels)
+    # and for the mem7/mem7.1 byte-identical overlap; a pure hashing no-op on disjoint
+    # captures. Runs BEFORE grouping/splitting so a photo can never leak across splits.
+    merge_stats = None
+    if config.MERGE_CROSS_FOLDER.get(subset, True):
+        parsed, merge_stats = merge_by_image_identity(parsed)
+
     # groups (per source) -> items
     by_source = {}
     for img in parsed:
@@ -210,6 +220,7 @@ def build_subset(subset: str, balance: bool):
     meta = {"subset": subset, "version_hash": version_hash,
             "n_images": len(items), "balance_mode": balance_mode,
             "balance_target": target, "oversampled_train": n_aug,
+            "cross_folder_merge": merge_stats,
             "class_names": class_names}
     for db in (config.YOLO_DB, config.COCO_DB):
         (db / subset).mkdir(parents=True, exist_ok=True)
@@ -217,6 +228,13 @@ def build_subset(subset: str, balance: bool):
     # self-clean macOS AppleDouble sidecars so future builds leave clean DBs
     n = clean_appledouble(config.YOLO_DB / subset) + clean_appledouble(config.COCO_DB / subset)
     print(f"[{subset}] {len(items)} images (+{n_aug} augmented train), version {version_hash}")
+    if merge_stats:
+        print(f"[{subset}] cross-folder merge: {merge_stats['unique_images']} unique images "
+              f"from {merge_stats['input_copies']} member copies "
+              f"({merge_stats['images_spanning_multiple_folders']} spanned >1 folder, "
+              f"{merge_stats['duplicate_copies_collapsed']} copies collapsed, "
+              f"+{merge_stats['boxes_added_by_union']} boxes unioned, "
+              f"{merge_stats['overlapping_boxes_removed']} dup boxes removed)")
     print(f"[{subset}] dedup dropped {n_dedup} duplicate-annotation images")
     print(f"[{subset}] skipped {skipped_dim} images: EXIF/XML dimension mismatch")
     print(f"[{subset}] skipped {skipped_bad_xml} unparseable XML files")

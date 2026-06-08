@@ -26,11 +26,15 @@ NOTEBOOKS = {
         "# Unzip both DBs from Drive to fast local storage\n"
         "ensure_dataset(drive_db_zip('yolo_train_db'), '/content/data', 'yolo_train_db')\n"
         "ensure_dataset(drive_db_zip('RF_DETR_Faster_RCNN_train_db'), '/content/data', 'RF_DETR_Faster_RCNN_train_db')",
-        "# (Optional) Re-run data-prep from raw mem* if they're on Drive instead of prebuilt DBs\n"
+        "# (Optional) Re-run data-prep from raw mem*/6th-june if they're on Drive instead of prebuilt DBs.\n"
+        "# build_dataset content-hash-merges byte-identical photo copies (the per-annotator 6th-june\n"
+        "# data has the same photo in several member folders) -> one entry with the UNION of all boxes.\n"
         "# !python -m data_prep.build_dataset --subset all",
+        "# verify asserts no capture-group AND no image-content leakage across splits\n"
         "!python -m data_prep.verify_dataset --subset pole\n"
         "!python -m data_prep.verify_dataset --subset component_above_1000\n"
-        "!python -m data_prep.verify_dataset --subset component_below_1000",
+        "!python -m data_prep.verify_dataset --subset component_below_1000\n"
+        "!python -m data_prep.verify_dataset --subset component_classification",
     ],
     "01_train_yolo": _SETUP + [
         "ensure_dataset(drive_db_zip('yolo_train_db'), '/content/data', 'yolo_train_db')",

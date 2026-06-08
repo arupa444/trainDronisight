@@ -69,6 +69,17 @@ SUBSET_SOURCE_DIRS = {
 # Subsets not listed use cap-to-rarest (pole/above) or oversample-to-max (below).
 BALANCE_TARGET = {"component_classification": 400}
 
+# Collapse every byte-identical copy of one physical image into a SINGLE entry holding
+# the UNION of all copies' boxes, BEFORE splitting. This is keyed on image CONTENT hash,
+# so it is safe everywhere: it only ever merges genuinely identical photos and can never
+# fuse two distinct captures. It is REQUIRED for the 6th-june condition data (8-9 members
+# each labeled different classes over the same ~9k photos -> one photo lives in several
+# member folders with only partial labels), and it also fixes a latent form of the same
+# bug in the mem7/mem7.1 overlap (byte-identical photos that carried different annotations
+# were previously kept as two partial-label, split-leaking copies). Enabled for every
+# subset; it is a no-op on truly disjoint captures (just a hashing pass).
+MERGE_CROSS_FOLDER = {s: True for s in SUBSETS}
+
 # Split
 SPLIT_RATIOS = {"train": 0.80, "val": 0.15, "test": 0.05}
 
