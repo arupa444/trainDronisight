@@ -40,6 +40,8 @@ NOTEBOOKS = {
         "!python -m train_yolo.train_components --subset component_above_1000 --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt",
         "# 3) component_below_1000 (vegetation/top_crossarm/om_crossarm/rust): oversampled train, more epochs\n"
         "!python -m train_yolo.train_components --subset component_below_1000 --version clahe --epochs 200 --imgsz 1280 --batch 16 --model yolo26m.pt",
+        "# 4) component_classification (14 condition classes; train balanced to ~400/class)\n"
+        "!python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt",
         "# Colab runtimes are ephemeral -> copy weights + plots to Drive before the session ends\n"
         "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
@@ -48,6 +50,7 @@ NOTEBOOKS = {
         "!python -m train_faster_rcnn.train --subset pole --version clahe --epochs 30 --batch 4",
         "!python -m train_faster_rcnn.train --subset component_above_1000 --version clahe --epochs 30 --batch 4",
         "!python -m train_faster_rcnn.train --subset component_below_1000 --version clahe --epochs 30 --batch 4",
+        "!python -m train_faster_rcnn.train --subset component_classification --version clahe --epochs 60 --batch 2",
         "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
     "03_train_rf_detr": _SETUP + [
@@ -57,6 +60,8 @@ NOTEBOOKS = {
         "!python -m train_rf_detr.train --subset pole --version clahe --epochs 50 --batch 4 --resolution 728",
         "!python -m train_rf_detr.train --subset component_above_1000 --version clahe --epochs 50 --batch 4 --resolution 728",
         "!python -m train_rf_detr.train --subset component_below_1000 --version clahe --epochs 50 --batch 4 --resolution 728",
+        "# 1120 is divisible by both 56 (train) and 32 (predict) -> no inference-shape rounding\n"
+        "!python -m train_rf_detr.train --subset component_classification --version clahe --epochs 50 --batch 8 --resolution 1120",
         "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
     "04_inference_pipeline": _SETUP + [
