@@ -142,7 +142,8 @@ If `MPS available: False`, you're likely on an Intel Mac or an old torch — rei
 **Only if** you changed the class policy, CLAHE, or split logic. Requires the raw source folders present under `DRONISIGHT_DATA` — the **11 mem-captures** (`mem2 5th june, mem3…mem8, mem 7.1 5th june, mem10, 4thJuneMem4, 4thJuneMem8`) feed pole/components, and the **8 `6thMem*AllTeam1` folders** under `6th june ` feed `component_classification` (the exact lists are `config._SOURCE_FOLDER_NAMES` + `config._CONDITION_FOLDER_NAMES`). Otherwise skip — the DBs are ready.
 
 ```bash
-python -m data_prep.build_dataset --subset all          # builds all 4 subsets into both DBs
+python -m data_prep.build_dataset --subset all          # builds all 4 full-frame subsets into both DBs
+python -m data_prep.build_dataset --subset all_crop     # (optional) the 3 crop-aligned variants for the ablation
 python -m data_prep.verify_dataset --subset pole        # group + image-content leakage + label-validity gate
 python -m data_prep.verify_dataset --subset component_above_1000
 python -m data_prep.verify_dataset --subset component_below_1000
@@ -185,6 +186,14 @@ python -m train_yolo.train_components --subset component_classification --versio
 ```
 - **Keep `imgsz 1280`** here — components include thin wires that vanish at low res.
 - **`component_classification`** is the 4th-stage condition model: it detects condition classes (normal/band/broken/chip_off/…) on the **component crop**, not the pole. Output: `runs/component_classification/yolo/weights/best.pt`.
+
+**Crop-aligned ablation (recommended for the small classes).** The three component/condition detectors are trained on full frames but *run on crops* at inference (above/below on the pole crop, condition on the component crop). To close that spatial-scale gap, build the `<base>_crop` subsets (`build_dataset --subset all_crop`) and train them too — they crop each frame to the pole/component region so train scale == serve scale:
+```bash
+python -m train_yolo.train_components --subset component_above_1000_crop    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_below_1000_crop    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_classification_crop --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+```
+Compare each crop model's **val mAP** against its full-frame twin and run whichever wins in the pipeline (the weights paths are `runs/<subset>_crop/yolo/weights/best.pt`). Expect the crop models to help most on thin wires and small insulators.
 - **`yolo26x` at 1280 will likely OOM on 24 GB** → use `--model yolo26m.pt` (recommended) or `yolo26l.pt`, and/or `--batch 2`.
 - **Output:** `runs/component_above_1000/yolo/weights/best.pt` and `runs/component_below_1000/yolo/weights/best.pt`.
 - `component_below_1000` is the harder one (genuinely scarce classes); give it more epochs. Its train split is already offline-oversampled to equalize classes, and `train_args.py` adds stronger online aug on top.

@@ -46,6 +46,12 @@ NOTEBOOKS = {
         "!python -m train_yolo.train_components --subset component_below_1000 --version clahe --epochs 200 --imgsz 1280 --batch 16 --model yolo26m.pt",
         "# 4) component_classification (14 condition classes; train balanced to ~400/class)\n"
         "!python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt",
+        "# 5) (ablation) crop-aligned variants: trained on pole/component CROPS so train scale ==\n"
+        "#    inference scale. Needs the *_crop datasets (build_dataset --subset all_crop). Compare\n"
+        "#    each crop model's val mAP to its full-frame twin and run the winner.\n"
+        "!python -m train_yolo.train_components --subset component_above_1000_crop --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt\n"
+        "!python -m train_yolo.train_components --subset component_below_1000_crop --version clahe --epochs 200 --imgsz 1280 --batch 16 --model yolo26m.pt\n"
+        "!python -m train_yolo.train_components --subset component_classification_crop --version clahe --epochs 150 --imgsz 1280 --batch 16 --model yolo26m.pt",
         "# Colab runtimes are ephemeral -> copy weights + plots to Drive before the session ends\n"
         "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],

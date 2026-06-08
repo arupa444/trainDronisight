@@ -48,7 +48,8 @@ python -m inference.pipeline --image x.jpg \
 ```
 Rebuild data (only if class policy / CLAHE / split / dedup / oversampling logic changes — DBs are otherwise prebuilt):
 ```bash
-python -m data_prep.build_dataset --subset all                       # add --no-balance to keep all images
+python -m data_prep.build_dataset --subset all                       # 4 full-frame base subsets (--no-balance to keep all)
+python -m data_prep.build_dataset --subset all_crop                  # the 3 crop-aligned variants (or all_both)
 python -m data_prep.verify_dataset --subset component_above_1000     # leakage + label-validity gate (run per subset)
 ```
 
@@ -72,7 +73,9 @@ python -m data_prep.verify_dataset --subset component_above_1000     # leakage +
 
 **Class policy — three subsets.** All 9 classes are now trained, split by frequency in `config.SUBSET_CLASSES`: `pole`; `component_above_1000` (the 4 high-frequency classes); `component_below_1000` (the 4 rare classes `vegetation, top_crossarm, om_crossarm, rust`, formerly ignored). `shared/labels.py` now maps all 9 to canonical names; only genuinely unknown names → `None`.
 
-**Balancing differs per subset.** `component_above_1000` uses the down-cap (`balance.select_balanced` caps each class toward the rarest, `v_insulator`). `component_below_1000` instead uses **offline oversampling**: `data_prep/oversample.py` (`plan_oversample` + `augment_image`, via albumentations) duplicates rare-class **train** images with bbox-aware, orientation-aware augmentation until each class approaches the max count; val/test stay raw. `build_dataset` forces balance OFF for below_1000 and runs the oversampler only on the train split, writing `<key>_augN.jpg`. `sample_weights.csv` is still emitted.
+**Balancing differs per subset.** `component_above_1000` uses the down-cap (`balance.select_balanced` caps each class toward the rarest, `v_insulator`). `component_below_1000` instead uses **offline oversampling**: `data_prep/oversample.py` (`plan_oversample` + `augment_image`, via albumentations) duplicates rare-class **train** images with bbox-aware, orientation-aware augmentation until each class approaches the max count; val/test stay raw. `build_dataset` forces balance OFF for below_1000 and runs the oversampler only on the train split, writing `<key>_augN.jpg`. `sample_weights.csv` is emitted but **informational only** — no trainer consumes it; balance is realized entirely by the pre-balanced DB.
+
+**Crop-aligned `<base>_crop` subsets (train scale == inference scale).** The component/condition detectors are *trained on full ~4000×3000 frames but run on crops* (above/below on the pole crop, condition on the component crop) — a train/serve **spatial-scale gap** that hurts thin wires and small insulators. `data_prep/crop_align.py` + `config.CROP_ALIGN` produce `component_above_1000_crop`, `component_below_1000_crop`, `component_classification_crop`: `"anchor"` mode crops each frame to its **pole** box (+pad) keeping the visible component boxes (above/below); `"self"` mode crops to each **component** box (+pad) (condition). Each `<base>_crop` shares its base's class list / sources / balance / merge policy (`config.base_subset()`); a source image expands into N crop items that **all inherit the source's capture group**, so crops of one photo never split across train/val/test. CLAHE is applied to the **full frame then sliced** (identical to inference). Build with `python -m data_prep.build_dataset --subset all_crop` (or `all_both`); keep BOTH full-frame and crop subsets and pick the **val-mAP winner** (the documented ablation).
 
 **Inference must match training preprocessing.** `inference/pipeline.py` applies EXIF-orient + CLAHE **once** on the full frame; every pole crop inherits it, so both component models see their trained distribution. **Both** `component_above_1000` and `component_below_1000` detectors run on the **pole crop** (per design), each remapped to the full frame. Use `--no-clahe` only for `orig`-trained weights. Default imgsz mirrors training (pole 640, components 1280). The single-model CLIs (`infer_pole`, `infer_components`) do the same.
 

@@ -84,6 +84,7 @@ Built once by `data_prep` onto the data root (default `/Volumes/dronisight`, ove
 - **`orig` vs `clahe`:** every image is stored both untouched and with adaptive CLAHE (exposure fix for backlit/blown-sky frames). Train both, keep whichever wins on val mAP.
 - **Splits** are grouped by capture sequence (no near-duplicate leakage) and stratified across all 11 capture folders. `verify_dataset` asserts no group leakage **and** re-hashes the written DB to assert no physical photo lands in >1 split.
 - **Dedup + merge:** re-annotated overlaps are de-duplicated, and every **byte-identical** photo copy is content-hash-**merged** into one entry with the union of all members' boxes (the per-annotator 6th-june condition data). For the condition subset, objects two members labeled with conflicting conditions are resolved (defect beats normal; defect-vs-defect dropped).
+- **Crop-aligned `<base>_crop` subsets** (`build_dataset --subset all_crop`): the component/condition detectors run on crops at inference (pole crop / component crop) but were trained on full frames. The `_crop` variants crop each frame to the pole/component region so train scale matches serve scale — train both and keep the val-mAP winner (closes the small-object scale gap).
 - Detection-subset instance counts (pre-merge): pole 2424 · wire 3532 · h_insulator 3358 · crossarm_stright 2971 · v_insulator 2669 · top_crossarm 637 · vegetation 634 · om_crossarm 444 · rust 225. The condition subset adds 14 condition classes from the 6th-june captures.
 
 ## Models & current dataset notes

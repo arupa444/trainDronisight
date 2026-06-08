@@ -151,6 +151,27 @@ ready, but is **not yet wired as the 4th stage**. Two ways to use it today:
 
 ---
 
+## 3D. Crop-aligned variants (train scale == inference scale)
+
+The component/condition detectors run on **crops** at inference (above/below on the pole crop,
+condition on the component crop) but are trained on full ~4000×3000 frames — a spatial-scale gap
+that costs most on thin wires / small insulators. Build the `<base>_crop` subsets and train them
+as an ablation against the full-frame models:
+
+```bash
+# build the 3 crop-aligned datasets (pole-crop for above/below, component-crop for condition)
+python -m data_prep.build_dataset --subset all_crop
+for s in component_above_1000_crop component_below_1000_crop component_classification_crop; do
+  python -m data_prep.verify_dataset --subset "$s"; done
+
+# train (YOLO shown; FRCNN/RF-DETR accept the same --subset names)
+python -m train_yolo.train_components --subset component_above_1000_crop    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_below_1000_crop    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_classification_crop --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+```
+Compare each `_crop` model's **val mAP** to its full-frame twin; run the winner in the pipeline
+(`runs/<subset>_crop/yolo/weights/best.pt`). Keep BOTH datasets so the comparison stays reproducible.
+
 ## 4. Model-selection checklist (after all trainings)
 
 1. For each stage, compare **val mAP@.5** across YOLO / FRCNN / RF-DETR and across `clahe` vs `orig`.
