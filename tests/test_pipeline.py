@@ -35,6 +35,27 @@ def test_pipeline_handles_no_poles():
     assert out["poles"] == []
 
 
+def test_pipeline_attaches_condition_when_detector_given(tmp_path):
+    # stage 4: each detected component crop gets a 'conditions' list from the condition model
+    img = np.zeros((200, 200, 3), np.uint8)
+    pole_det = _Fake([Detection("pole", 0.95, (10, 10, 110, 160))])
+    above_det = _Fake([Detection("v_insulator", 0.8, (5, 5, 25, 25))])
+    cond_det = _Fake([Detection("v_insulator_broken", 0.7, (0, 0, 10, 10))])
+    out = run_pipeline(img, pole_det, above_det, _Fake([]), crop_dir=tmp_path,
+                       image_name="x.jpg", pole_pad=0.0, condition_detector=cond_det)
+    comp = out["poles"][0]["components_above"][0]
+    assert comp["conditions"] == [{"class": "v_insulator_broken", "confidence": 0.7,
+                                   "box_comp": [0, 0, 10, 10]}]
+
+
+def test_pipeline_omits_condition_when_no_detector(tmp_path):
+    img = np.zeros((200, 200, 3), np.uint8)
+    out = run_pipeline(img, _Fake([Detection("pole", 0.9, (10, 10, 110, 160))]),
+                       _Fake([Detection("wire", 0.8, (5, 5, 25, 25))]), _Fake([]),
+                       crop_dir=tmp_path, image_name="x.jpg", pole_pad=0.0)
+    assert "conditions" not in out["poles"][0]["components_above"][0]
+
+
 def test_build_detector_selects_backend(monkeypatch):
     import inference.pipeline as P
     calls = {}
@@ -47,9 +68,16 @@ def test_build_detector_selects_backend(monkeypatch):
         calls["rfdetr"] = (w, names, conf, resolution)
         return "R"
 
+    def fake_frcnn(w, names, conf):
+        calls["frcnn"] = (w, names, conf)
+        return "F"
+
     monkeypatch.setattr(P, "YoloDetector", fake_yolo)
     monkeypatch.setattr(P, "RFDetrDetector", fake_rf)
+    monkeypatch.setattr(P, "TorchvisionDetector", fake_frcnn)
     assert P.build_detector("yolo", "y.pt", 0.25, 1280, ["wire"]) == "Y"
     assert calls["yolo"] == ("y.pt", 0.25, 1280)
     assert P.build_detector("rfdetr", "r.pth", 0.3, 1280, ["wire"], resolution=1008) == "R"
     assert calls["rfdetr"] == ("r.pth", ["wire"], 0.3, 1008)
+    assert P.build_detector("frcnn", "f.pt", 0.4, 1280, ["wire"]) == "F"
+    assert calls["frcnn"] == ("f.pt", ["wire"], 0.4)

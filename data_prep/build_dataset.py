@@ -20,7 +20,7 @@ from data_prep.grouping import assign_groups
 from data_prep.split import grouped_split
 from data_prep.balance import select_balanced, sample_weights
 from data_prep.dedup import drop_duplicate_annotations
-from data_prep.merge_annotations import merge_by_image_identity
+from data_prep.merge_annotations import merge_by_image_identity, resolve_cross_class_conflicts
 from data_prep.oversample import plan_oversample, augment_image
 from data_prep.profile_images import profile_array
 from data_prep.preprocess import load_oriented_bgr, clahe_params_from_profile, apply_clahe
@@ -126,6 +126,27 @@ def build_subset(subset: str, balance: bool):
     if config.MERGE_CROSS_FOLDER.get(subset, True):
         parsed, merge_stats = merge_by_image_identity(parsed)
 
+    # Condition-conflict resolution (component_classification): when members gave the SAME
+    # object different condition labels, defect beats normal and defect-vs-defect is dropped
+    # as ambiguous. Drop any image left with no in-subset boxes afterwards.
+    cond_conflict_stats = None
+    if config.RESOLVE_CONDITION_CONFLICTS.get(subset):
+        n_over = n_drop = 0
+        empties = []
+        for img, (s, ann) in parsed.items():
+            rb, no, nd = resolve_cross_class_conflicts(ann.boxes)
+            n_over += no
+            n_drop += nd
+            if any(b.name in class_names for b in rb):
+                parsed[img] = (s, Annotation(ann.width, ann.height, rb))
+            else:
+                empties.append(img)
+        for img in empties:
+            del parsed[img]
+        cond_conflict_stats = {"normal_overridden_by_defect": n_over,
+                               "ambiguous_objects_dropped": n_drop,
+                               "images_emptied_and_dropped": len(empties)}
+
     # groups (per source) -> items
     by_source = {}
     for img in parsed:
@@ -217,10 +238,16 @@ def build_subset(subset: str, balance: bool):
         .to_csv(config.YOLO_DB / subset / "sample_weights.csv", index=False)
     balance_mode = ("target" if do_target else "cap_rarest" if do_balance
                     else "oversample_max" if do_oversample else "none")
+    # n_images counts UNIQUE SOURCE images (post-merge/resolve, pre train-cap/augmentation);
+    # n_written_images is what actually landed on disk (after the train cap + augmented copies).
     meta = {"subset": subset, "version_hash": version_hash,
-            "n_images": len(items), "balance_mode": balance_mode,
+            "n_unique_source_images": len(items), "n_images": len(items),
+            "n_written_images": len(manifest_rows),
+            "balance_mode": balance_mode,
             "balance_target": target, "oversampled_train": n_aug,
+            "skipped_dim_mismatch": skipped_dim, "skipped_bad_xml": skipped_bad_xml,
             "cross_folder_merge": merge_stats,
+            "condition_conflict_resolution": cond_conflict_stats,
             "class_names": class_names}
     for db in (config.YOLO_DB, config.COCO_DB):
         (db / subset).mkdir(parents=True, exist_ok=True)
@@ -235,6 +262,11 @@ def build_subset(subset: str, balance: bool):
               f"{merge_stats['duplicate_copies_collapsed']} copies collapsed, "
               f"+{merge_stats['boxes_added_by_union']} boxes unioned, "
               f"{merge_stats['overlapping_boxes_removed']} dup boxes removed)")
+    if cond_conflict_stats:
+        print(f"[{subset}] condition conflicts: "
+              f"{cond_conflict_stats['normal_overridden_by_defect']} normal->defect overrides, "
+              f"{cond_conflict_stats['ambiguous_objects_dropped']} ambiguous objects dropped, "
+              f"{cond_conflict_stats['images_emptied_and_dropped']} images emptied")
     print(f"[{subset}] dedup dropped {n_dedup} duplicate-annotation images")
     print(f"[{subset}] skipped {skipped_dim} images: EXIF/XML dimension mismatch")
     print(f"[{subset}] skipped {skipped_bad_xml} unparseable XML files")

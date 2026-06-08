@@ -87,26 +87,39 @@ class TorchvisionDetector:
         return parse_torchvision_output(out, self.class_names, self.conf)
 
 
+def rfdetr_block_size(default=32):
+    """RF-DETR's required resolution divisor = patch_size * num_windows for the L variant.
+    Read from the installed library (version-robust): older RF-DETR-L used 14*4=56, the
+    current build uses 16*2=32. Both training resolution and predict shape must be a multiple."""
+    try:
+        from rfdetr.config import RFDETRLargeConfig
+        c = RFDETRLargeConfig()
+        return int(c.patch_size) * int(c.num_windows)
+    except Exception:
+        return default
+
+
 class RFDetrDetector:
     """Wraps an RF-DETR-L checkpoint behind the Detector interface.
 
-    resolution must match training (multiple of 56). The pipeline feeds BGR arrays
-    (cv2/load_oriented_bgr) but RF-DETR expects RGB, so we convert."""
+    resolution must be a multiple of the model's block_size (patch_size*num_windows; 32 on
+    the installed build). The pipeline feeds BGR arrays (cv2/load_oriented_bgr) but RF-DETR
+    expects RGB, so we convert."""
 
-    def __init__(self, weights_path, class_names, conf=0.5, resolution=728):
+    def __init__(self, weights_path, class_names, conf=0.5, resolution=672):
         from rfdetr import RFDETRLarge
         self.model = RFDETRLarge(pretrain_weights=weights_path, resolution=resolution)
         self.class_names = class_names
         self.conf = conf
-        # predict() needs a shape divisible by block_size (32); resolution is only required
-        # %56, so e.g. 1008 must be rounded to 1024 for inference.
-        self.shape = round(resolution / 32) * 32
+        # predict() validates shape % block_size == 0 on BOTH dims and wants a (h, w) tuple.
+        block = rfdetr_block_size()
+        self.shape = max(block, round(resolution / block) * block)
 
     def predict(self, image) -> list:
         import numpy as np
         if isinstance(image, np.ndarray) and image.ndim == 3 and image.shape[2] == 3:
             image = np.ascontiguousarray(image[:, :, ::-1])  # BGR -> RGB
-        det = self.model.predict(image, threshold=self.conf, shape=self.shape)
+        det = self.model.predict(image, threshold=self.conf, shape=(self.shape, self.shape))
         results = []
         for xyxy, conf, cls_id in zip(det.xyxy, det.confidence, det.class_id):
             i = int(cls_id)

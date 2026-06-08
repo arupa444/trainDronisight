@@ -59,12 +59,13 @@ NOTEBOOKS = {
     ],
     "03_train_rf_detr": _SETUP + [
         "ensure_dataset(drive_db_zip('RF_DETR_Faster_RCNN_train_db'), '/content/data', 'RF_DETR_Faster_RCNN_train_db')",
-        "# --version clahe trains on CLAHE pixels; --resolution (x56) raised from lib default ~560\n"
-        "# so thin wires survive (728; use 1008 for more detail if the GPU has memory)\n"
-        "!python -m train_rf_detr.train --subset pole --version clahe --epochs 50 --batch 4 --resolution 728",
-        "!python -m train_rf_detr.train --subset component_above_1000 --version clahe --epochs 50 --batch 4 --resolution 728",
-        "!python -m train_rf_detr.train --subset component_below_1000 --version clahe --epochs 50 --batch 4 --resolution 728",
-        "# 1120 is divisible by both 56 (train) and 32 (predict) -> no inference-shape rounding\n"
+        "# --version clahe trains on CLAHE pixels; --resolution must be a multiple of the model\n"
+        "# block_size (patch_size*num_windows: 32 on the current RF-DETR build). 672/896/1120 are\n"
+        "# multiples of BOTH 32 and 56, so they're safe across lib versions and need no predict rounding.\n"
+        "!python -m train_rf_detr.train --subset pole --version clahe --epochs 50 --batch 4 --resolution 672",
+        "!python -m train_rf_detr.train --subset component_above_1000 --version clahe --epochs 50 --batch 4 --resolution 672",
+        "!python -m train_rf_detr.train --subset component_below_1000 --version clahe --epochs 50 --batch 4 --resolution 672",
+        "# higher res for the 14-class condition stage (more small-object detail)\n"
         "!python -m train_rf_detr.train --subset component_classification --version clahe --epochs 50 --batch 8 --resolution 1120",
         "from notebooks.colab_utils import save_runs_to_drive\nprint('saved to', save_runs_to_drive())",
     ],
@@ -76,9 +77,14 @@ NOTEBOOKS = {
         "import glob, os\n"
         "POLE=max(glob.glob('runs/pole/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
         "ABOVE=max(glob.glob('runs/component_above_1000/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
-        "BELOW=max(glob.glob('runs/component_below_1000/yolo*/weights/best.pt'), key=os.path.getmtime)\nprint(POLE, ABOVE, BELOW)",
+        "BELOW=max(glob.glob('runs/component_below_1000/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
+        "# stage 4 (optional): component condition classifier; empty if not trained yet\n"
+        "CONDG=glob.glob('runs/component_classification/yolo*/weights/best.pt')\n"
+        "COND=max(CONDG, key=os.path.getmtime) if CONDG else None\nprint(POLE, ABOVE, BELOW, COND)",
         "import glob\nIMG=sorted(glob.glob('/content/data/yolo_train_db/component_above_1000/images/test/orig/*.jpg'))[0]\nprint(IMG)",
-        "!python -m inference.pipeline --image \"$IMG\" --pole-weights $POLE --comp-above-weights $ABOVE --comp-below-weights $BELOW --out /content/result.json",
+        "# add --condition-weights $COND to attach a 'conditions' list to every detected component\n"
+        "COND_ARG=f'--condition-weights {COND}' if COND else ''\n"
+        "!python -m inference.pipeline --image \"$IMG\" --pole-weights $POLE --comp-above-weights $ABOVE --comp-below-weights $BELOW $COND_ARG --out /content/result.json",
         "import json; print(json.dumps(json.load(open('/content/result.json')), indent=2))",
         "# persist the result + crops to Drive\n"
         "from notebooks.colab_utils import save_runs_to_drive\n"

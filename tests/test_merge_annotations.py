@@ -77,3 +77,55 @@ def test_iou_and_dedup_helpers():
     # different class but overlapping -> NOT a duplicate
     other = Box("y", 0, 0, 10, 10)
     assert len(_dedup_boxes([a, other])) == 2
+
+
+# --- condition-conflict resolution (component_classification) -----------------------------
+from data_prep.merge_annotations import resolve_cross_class_conflicts, condition_base_and_normal
+
+
+def test_condition_base_and_normal():
+    assert condition_base_and_normal("v_insulator_normal") == ("v_insulator", True)
+    assert condition_base_and_normal("v_insulator_broken") == ("v_insulator", False)
+    assert condition_base_and_normal("v_insulator_chip_off") == ("v_insulator", False)
+    assert condition_base_and_normal("straight_crossarm_band") == ("straight_crossarm", False)
+    assert condition_base_and_normal("wire_normal") == ("wire", True)
+    assert condition_base_and_normal("cross_wire") == ("wire", False)   # the wire defect class
+    assert condition_base_and_normal("om_crossarm_normal") == ("om_crossarm", True)
+
+
+def test_base_and_normal_covers_all_14_condition_classes():
+    from shared import config
+    for name in config.COMPONENT_CLASSIFICATION_CLASSES:
+        base, is_norm = condition_base_and_normal(name)
+        assert base and isinstance(is_norm, bool)
+
+
+def test_defect_beats_normal_on_same_object():
+    boxes = [Box("v_insulator_normal", 0, 0, 100, 100),
+             Box("v_insulator_broken", 2, 2, 100, 100)]   # IoU ~0.96, same base
+    resolved, n_override, n_drop = resolve_cross_class_conflicts(boxes)
+    assert [b.name for b in resolved] == ["v_insulator_broken"]
+    assert n_override == 1 and n_drop == 0
+
+
+def test_defect_vs_defect_is_dropped_as_ambiguous():
+    boxes = [Box("v_insulator_band", 0, 0, 100, 100),
+             Box("v_insulator_chip_off", 2, 2, 100, 100)]
+    resolved, n_override, n_drop = resolve_cross_class_conflicts(boxes)
+    assert resolved == [] and n_drop == 2 and n_override == 0
+
+
+def test_different_base_components_are_kept():
+    # a v_insulator and an h_insulator overlapping is legit co-location, not a conflict
+    boxes = [Box("v_insulator_normal", 0, 0, 100, 100),
+             Box("h_insulator_normal", 2, 2, 100, 100)]
+    resolved, n_override, n_drop = resolve_cross_class_conflicts(boxes)
+    assert sorted(b.name for b in resolved) == ["h_insulator_normal", "v_insulator_normal"]
+    assert n_override == 0 and n_drop == 0
+
+
+def test_non_overlapping_same_class_both_kept():
+    boxes = [Box("v_insulator_broken", 0, 0, 10, 10),
+             Box("v_insulator_broken", 500, 500, 520, 520)]  # far apart -> two real objects
+    resolved, _, _ = resolve_cross_class_conflicts(boxes)
+    assert len(resolved) == 2

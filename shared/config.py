@@ -80,6 +80,13 @@ BALANCE_TARGET = {"component_classification": 400}
 # subset; it is a no-op on truly disjoint captures (just a hashing pass).
 MERGE_CROSS_FOLDER = {s: True for s in SUBSETS}
 
+# For the per-object CONDITION subset, after merging the union of members' boxes, resolve
+# the case where members gave the SAME physical object DIFFERENT condition labels: defect
+# beats normal, and a defect-vs-defect disagreement is dropped as ambiguous. Only meaningful
+# for component_classification (for the above/below detectors, overlapping distinct classes
+# like a wire crossing a crossarm are legitimate, so it is left OFF there).
+RESOLVE_CONDITION_CONFLICTS = {"component_classification": True}
+
 # Split
 SPLIT_RATIOS = {"train": 0.80, "val": 0.15, "test": 0.05}
 

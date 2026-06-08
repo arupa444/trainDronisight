@@ -3,9 +3,11 @@
         --epochs 50 --batch 4 --resolution 728
 
 CLAHE: --version clahe makes build_rfdetr_view symlink the `clahe` image variant, so the
-model trains on the same CLAHE-preprocessed pixels as YOLO/FRCNN. --resolution (multiple
-of 56) sets RF-DETR's input size; the library default (~560) is too low for thin wires,
-so raise it (728 / 1008) for a fair small-object comparison vs YOLO@1280.
+model trains on the same CLAHE-preprocessed pixels as YOLO/FRCNN. --resolution sets RF-DETR's
+input size; it must be a multiple of the model's block_size (patch_size*num_windows, read from
+the installed library: 32 on the current build, 56 on older RF-DETR-L). The library default
+(~560/704) is low for thin wires, so raise it (672 / 896 / 1120 are multiples of BOTH 32 and 56,
+so they're safe across versions and need no inference-shape rounding) for a fair comparison vs YOLO@1280.
 """
 import argparse
 from pathlib import Path
@@ -18,12 +20,16 @@ except ImportError:
 from shared import config
 from shared.device import select_device
 from train_rf_detr.layout import build_rfdetr_view
+from inference.backends import rfdetr_block_size
 
 
-def run(subset, version, epochs, batch, resolution=728):
-    if resolution % 56 != 0:
-        raise ValueError(f"RF-DETR resolution must be divisible by 56 (got {resolution}); "
-                         f"try {round(resolution / 56) * 56}.")
+def run(subset, version, epochs, batch, resolution=672):
+    block = rfdetr_block_size()
+    if resolution % block != 0:
+        raise ValueError(f"RF-DETR resolution must be divisible by block_size={block} "
+                         f"(patch_size*num_windows of the installed RFDETRLarge); got {resolution}. "
+                         f"Try {round(resolution / block) * block} (or a multiple of 224 like 672/896/1120 "
+                         f"that satisfies both 32 and 56).")
     device = select_device()
     if device != "cuda":
         print(f"WARNING: device={device}. RF-DETR training is impractical off CUDA; "
@@ -36,8 +42,8 @@ def run(subset, version, epochs, batch, resolution=728):
     print(f"[rfdetr] subset={subset}  version={version}  device={device}")
     print(f"[rfdetr] classes: {config.SUBSET_CLASSES.get(subset, '?')}")
     print(f"[rfdetr] CLAHE preprocessing: {'ON (clahe variant)' if version == 'clahe' else 'OFF (orig variant)'}")
-    print(f"[rfdetr] resolution={resolution} (%56==0)  epochs={epochs}  batch={batch}  "
-          f"(lib default ~560 raised for thin wires)")
+    print(f"[rfdetr] resolution={resolution} (block_size={block}, %{block}==0)  epochs={epochs}  "
+          f"batch={batch}  (lib default ~704 raised for thin wires)")
     print(f"[rfdetr] dataset_view={ds_dir}  ->  outputs runs/{subset}/rfdetr")
     print("=" * 64, flush=True)
 
@@ -52,9 +58,10 @@ def main():
     ap.add_argument("--version", choices=["orig", "clahe"], default="clahe")
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--batch", type=int, default=4)
-    ap.add_argument("--resolution", type=int, default=728,
-                    help="input size, must be divisible by 56 (default 728; 1008 for more "
-                         "small-object detail if the GPU has the memory)")
+    ap.add_argument("--resolution", type=int, default=672,
+                    help="input size, must be divisible by the model block_size "
+                         "(32 on the current RF-DETR build; use 672/896/1120 which also satisfy "
+                         "56 for forward-compat; 1120 for more small-object detail)")
     a = ap.parse_args()
     run(a.subset, a.version, a.epochs, a.batch, a.resolution)
 

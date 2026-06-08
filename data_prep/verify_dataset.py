@@ -76,8 +76,9 @@ def main():
     df = pd.read_csv(manifest)
     assert_no_group_leakage(df)
     print("OK no group leakage. Split sizes:", class_counts_from_manifest(df))
-    if config.MERGE_CROSS_FOLDER.get(args.subset, True):
-        assert_no_image_content_leakage(args.subset)
+    # Always run the image-content leakage gate: it's the cheap, decisive safety net
+    # (a physical photo in >1 split) and must never be silently coupled to a feature flag.
+    assert_no_image_content_leakage(args.subset)
     # box validity: every YOLO label coord in [0,1]
     bad = find_invalid_labels(config.YOLO_DB / args.subset / "labels")
     assert not bad, f"invalid YOLO labels: {bad[:5]}"
