@@ -47,7 +47,30 @@ SUBSET_CLASSES = {
     "component_below_1000": COMPONENT_BELOW_CLASSES,
     "component_classification": COMPONENT_CLASSIFICATION_CLASSES,
 }
+BASE_SUBSETS = list(SUBSET_CLASSES)
+
+# Crop-aligned variants: train the component/condition detectors on CROPS at the same spatial
+# scale they are run on at inference (above/below run on the pole crop; condition runs on the
+# component crop), instead of on full ~4000x3000 frames. This closes the train/serve scale gap
+# for thin wires and small insulators. Each <base>_crop subset shares its base's class list and
+# balance/source/merge policy; keep BOTH and pick the val-mAP winner (full-frame vs crop ablation).
+# CROP_ALIGN[base] = (mode, anchor_classes, pad_frac, min_visible_frac):
+#   * "anchor": crop to each anchor box (the pole) + pad; keep in-subset boxes >= min_visible in the crop.
+#   * "self":   crop to each in-subset box + pad (the component itself, with a little context).
+CROP_ALIGN = {
+    "component_above_1000": ("anchor", tuple(POLE_CLASSES), 0.05, 0.30),
+    "component_below_1000": ("anchor", tuple(POLE_CLASSES), 0.05, 0.30),
+    "component_classification": ("self", None, 0.10, 0.50),
+}
+CROP_SUBSETS = [b + "_crop" for b in CROP_ALIGN]
+for _b in CROP_ALIGN:
+    SUBSET_CLASSES[_b + "_crop"] = SUBSET_CLASSES[_b]
 SUBSETS = list(SUBSET_CLASSES)
+
+
+def base_subset(subset: str) -> str:
+    """The full-frame base a (possibly crop-aligned) subset derives its policy from."""
+    return subset[:-len("_crop")] if subset.endswith("_crop") else subset
 
 # Per-subset raw source folders: the mem captures feed pole/components; the '6th june'
 # close-up condition captures feed component_classification.

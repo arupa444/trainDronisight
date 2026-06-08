@@ -21,6 +21,7 @@ from data_prep.split import grouped_split
 from data_prep.balance import select_balanced, sample_weights
 from data_prep.dedup import drop_duplicate_annotations
 from data_prep.merge_annotations import merge_by_image_identity, resolve_cross_class_conflicts
+from data_prep.crop_align import make_crops
 from data_prep.oversample import plan_oversample, augment_image
 from data_prep.profile_images import profile_array
 from data_prep.preprocess import load_oriented_bgr, clahe_params_from_profile, apply_clahe
@@ -90,17 +91,23 @@ def _write_sample(subset, split_name, key, bgr, clahe_img, ann, class_names,
 
 def build_subset(subset: str, balance: bool):
     class_names = sample_class_list(subset)
+    # A "<base>_crop" subset shares its base's classes/source/balance/merge policy but writes
+    # CROP-aligned images (pole crop for above/below, component crop for condition) so train
+    # scale matches inference. All policy lookups below key off `base`.
+    base = config.base_subset(subset)
+    is_crop = subset != base
+    crop_cfg = config.CROP_ALIGN.get(base) if is_crop else None
     # Balance modes:
     #   target (e.g. classification=400): split raw, then on TRAIN cap each class DOWN to the
     #     target and augment under-target classes UP to it; val/test stay raw.
     #   below_1000: keep all, oversample TRAIN up to the max class count.
     #   else (pole/above): legacy down-cap toward the rarest kept class.
-    target = config.BALANCE_TARGET.get(subset)
+    target = config.BALANCE_TARGET.get(base)
     do_target = target is not None
     do_balance = (balance and config.BALANCE_CAP_ENABLED
-                  and not do_target and subset != "component_below_1000")
-    do_oversample = subset == "component_below_1000"
-    samples = collect_samples(config.SUBSET_SOURCE_DIRS.get(subset, config.SOURCE_DIRS))
+                  and not do_target and base != "component_below_1000")
+    do_oversample = base == "component_below_1000"
+    samples = collect_samples(config.SUBSET_SOURCE_DIRS.get(base, config.SOURCE_DIRS))
 
     # parse + keep only images that contain >=1 class for this subset
     parsed = {}
@@ -123,14 +130,14 @@ def build_subset(subset: str, balance: bool):
     # and for the mem7/mem7.1 byte-identical overlap; a pure hashing no-op on disjoint
     # captures. Runs BEFORE grouping/splitting so a photo can never leak across splits.
     merge_stats = None
-    if config.MERGE_CROSS_FOLDER.get(subset, True):
+    if config.MERGE_CROSS_FOLDER.get(base, True):
         parsed, merge_stats = merge_by_image_identity(parsed)
 
     # Condition-conflict resolution (component_classification): when members gave the SAME
     # object different condition labels, defect beats normal and defect-vs-defect is dropped
     # as ambiguous. Drop any image left with no in-subset boxes afterwards.
     cond_conflict_stats = None
-    if config.RESOLVE_CONDITION_CONFLICTS.get(subset):
+    if config.RESOLVE_CONDITION_CONFLICTS.get(base):
         n_over = n_drop = 0
         empties = []
         for img, (s, ann) in parsed.items():
@@ -155,12 +162,34 @@ def build_subset(subset: str, balance: bool):
     for source, names in by_source.items():
         name_to_group.update(assign_groups(names, source, config.GROUP_TIME_GAP_S))
 
-    items = [{"image": img, "name": img.name,
-              "key": output_key(parsed[img][0].source, img.stem),
-              "group": name_to_group[img.name],
-              "source": parsed[img][0].source,
-              "classes": [b.name for b in parsed[img][1].boxes if b.name in class_names]}
-             for img in parsed]
+    # crop_ann_by_key: for crop subsets, key -> (crop_xyxy, crop_Annotation); the write loop
+    # slices the (CLAHE'd) full frame to crop_xyxy. One source image yields N crop items, all
+    # sharing the source image's group so every crop of one photo stays in one split.
+    crop_ann_by_key = {}
+    n_crop_src = 0
+    if is_crop:
+        mode, anchor_classes, pad_frac, min_visible = crop_cfg
+        items = []
+        for img in parsed:
+            s, ann = parsed[img]
+            base_key = output_key(s.source, img.stem)
+            crops = make_crops(ann, class_names, mode, anchor_classes, pad_frac, min_visible)
+            if crops:
+                n_crop_src += 1
+            for ci, (cbox, cann) in enumerate(crops):
+                key = f"{base_key}_c{ci}"
+                crop_ann_by_key[key] = (cbox, cann)
+                items.append({"image": img, "name": f"{img.name}#c{ci}", "key": key,
+                              "group": name_to_group[img.name], "source": s.source,
+                              "classes": [b.name for b in cann.boxes if b.name in class_names],
+                              "crop_box": cbox})
+    else:
+        items = [{"image": img, "name": img.name,
+                  "key": output_key(parsed[img][0].source, img.stem),
+                  "group": name_to_group[img.name],
+                  "source": parsed[img][0].source,
+                  "classes": [b.name for b in parsed[img][1].boxes if b.name in class_names]}
+                 for img in parsed]
 
     if do_balance:
         items = select_balanced(items, class_names, enabled=True, seed=config.SEED)
@@ -180,17 +209,30 @@ def build_subset(subset: str, balance: bool):
                                           seed=config.SEED, cap=target)
         written = []
         for it in split_items:
-            s, ann = parsed[it["image"]]
-            bgr = load_oriented_bgr(s.image)
-            h, w = bgr.shape[:2]
-            if (w, h) != (ann.width, ann.height):
+            s, full_ann = parsed[it["image"]]
+            bgr_full = load_oriented_bgr(s.image)
+            h, w = bgr_full.shape[:2]
+            if (w, h) != (full_ann.width, full_ann.height):
                 skipped_dim += 1
                 continue
-            prof = profile_array(bgr)
-            clip, grid = clahe_params_from_profile(prof)
-            clahe_img = apply_clahe(bgr, clip, grid)
-            key = output_key(it["source"], it["image"].stem)
-            _write_sample(subset, split_name, key, bgr, clahe_img, ann, class_names,
+            if is_crop:
+                # CLAHE on the FULL frame then slice -> identical to what inference does
+                # (pipeline CLAHEs the full frame and every crop inherits it).
+                prof_full = profile_array(bgr_full)
+                clip, grid = clahe_params_from_profile(prof_full)
+                clahe_full = apply_clahe(bgr_full, clip, grid)
+                x0, y0, x1, y1 = it["crop_box"]
+                bgr = bgr_full[y0:y1, x0:x1]
+                clahe_img = clahe_full[y0:y1, x0:x1]
+                ann = crop_ann_by_key[it["key"]][1]
+                prof = profile_array(bgr)
+            else:
+                bgr = bgr_full
+                prof = profile_array(bgr)
+                clip, grid = clahe_params_from_profile(prof)
+                clahe_img = apply_clahe(bgr, clip, grid)
+                ann = full_ann
+            _write_sample(subset, split_name, it["key"], bgr, clahe_img, ann, class_names,
                           coco_per_split, manifest_rows, it["source"], it["group"], prof, clip)
             written.append(it)
 
@@ -199,20 +241,26 @@ def build_subset(subset: str, balance: bool):
         if (do_oversample or do_target) and split_name == "train" and written:
             for j, idx in enumerate(plan_oversample(written, class_names, seed=config.SEED, target=target)):
                 it = written[idx]
-                s, ann = parsed[it["image"]]
-                bgr = load_oriented_bgr(s.image)
-                hh, ww = bgr.shape[:2]
-                if (ww, hh) != (ann.width, ann.height):
+                s, full_ann = parsed[it["image"]]
+                bgr_full = load_oriented_bgr(s.image)
+                hh, ww = bgr_full.shape[:2]
+                if (ww, hh) != (full_ann.width, full_ann.height):
                     continue
-                sub_boxes = [b for b in ann.boxes if b.name in class_names]
-                a_img, a_boxes = augment_image(bgr, sub_boxes, seed_n=config.SEED + j + 1)
+                if is_crop:
+                    x0, y0, x1, y1 = it["crop_box"]
+                    src_img = bgr_full[y0:y1, x0:x1]
+                    src_boxes = [b for b in crop_ann_by_key[it["key"]][1].boxes if b.name in class_names]
+                else:
+                    src_img = bgr_full
+                    src_boxes = [b for b in full_ann.boxes if b.name in class_names]
+                a_img, a_boxes = augment_image(src_img, src_boxes, seed_n=config.SEED + j + 1)
                 if not a_boxes:
                     continue
                 ah, aw = a_img.shape[:2]
                 prof = profile_array(a_img)
                 clip, grid = clahe_params_from_profile(prof)
                 a_clahe = apply_clahe(a_img, clip, grid)
-                key = f"{output_key(it['source'], it['image'].stem)}_aug{j}"
+                key = f"{it['key']}_aug{j}"
                 _write_sample(subset, "train", key, a_img, a_clahe,
                               Annotation(aw, ah, a_boxes), class_names,
                               coco_per_split, manifest_rows, it["source"], it["group"],
@@ -252,13 +300,17 @@ def build_subset(subset: str, balance: bool):
             "skipped_dim_mismatch": skipped_dim, "skipped_bad_xml": skipped_bad_xml,
             "cross_folder_merge": merge_stats,
             "condition_conflict_resolution": cond_conflict_stats,
+            "crop_aligned": is_crop, "base_subset": base,
+            "crop_mode": (crop_cfg[0] if crop_cfg else None),
+            "crop_source_images": n_crop_src if is_crop else None,
             "class_names": class_names}
     for db in (config.YOLO_DB, config.COCO_DB):
         (db / subset).mkdir(parents=True, exist_ok=True)
         (db / subset / "dataset_meta.json").write_text(json.dumps(meta, indent=2))
     # self-clean macOS AppleDouble sidecars so future builds leave clean DBs
     n = clean_appledouble(config.YOLO_DB / subset) + clean_appledouble(config.COCO_DB / subset)
-    print(f"[{subset}] {len(items)} images (+{n_aug} augmented train), version {version_hash}")
+    kind = f"crops from {n_crop_src} source images" if is_crop else "images"
+    print(f"[{subset}] {len(items)} {kind} (+{n_aug} augmented train), version {version_hash}")
     if merge_stats:
         print(f"[{subset}] cross-folder merge: {merge_stats['unique_images']} unique images "
               f"from {merge_stats['input_copies']} member copies "
@@ -279,10 +331,19 @@ def build_subset(subset: str, balance: bool):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--subset", choices=config.SUBSETS + ["all"], required=True)
+    # 'all' = the 4 full-frame base subsets; 'all_crop' = the crop-aligned variants;
+    # 'all_both' = everything. Individual subset names (incl. <base>_crop) also work.
+    ap.add_argument("--subset", choices=config.SUBSETS + ["all", "all_crop", "all_both"], required=True)
     ap.add_argument("--no-balance", action="store_true")
     args = ap.parse_args()
-    subsets = list(config.SUBSETS) if args.subset == "all" else [args.subset]
+    if args.subset == "all":
+        subsets = list(config.BASE_SUBSETS)
+    elif args.subset == "all_crop":
+        subsets = list(config.CROP_SUBSETS)
+    elif args.subset == "all_both":
+        subsets = list(config.BASE_SUBSETS) + list(config.CROP_SUBSETS)
+    else:
+        subsets = [args.subset]
     for sub in subsets:
         build_subset(sub, balance=not args.no_balance)
 

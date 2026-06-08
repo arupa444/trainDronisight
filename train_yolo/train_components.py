@@ -18,7 +18,10 @@ from shared.train_args import build_yolo_args
 from train_yolo.weights import resolve_weights
 from data_prep.emit_yolo import write_data_yaml
 
-COMPONENT_SUBSETS = ["component_above_1000", "component_below_1000", "component_classification"]
+COMPONENT_SUBSETS = ["component_above_1000", "component_below_1000", "component_classification",
+                     # crop-aligned variants (train scale == inference scale); same class lists
+                     "component_above_1000_crop", "component_below_1000_crop",
+                     "component_classification_crop"]
 
 
 def run(subset, version, epochs, imgsz, batch, model="yolo26x.pt"):

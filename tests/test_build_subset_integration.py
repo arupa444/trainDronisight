@@ -42,19 +42,20 @@ def tiny_db(tmp_path, monkeypatch):
     src_b = tmp_path / "memB"
     src_a.mkdir(); src_b.mkdir()
 
-    # 3 distinct images in A, each its own (untimed) capture group
+    # 3 distinct images in A, each its own (untimed) capture group. Each has a POLE box
+    # (sub-region, not the full frame) so the crop-aligned build can anchor on it.
     for i, cls in enumerate(["wire", "h_insulator", "v_insulator"]):
         stem = f"IMG_{i}"
         _write_img(src_a / f"{stem}.JPG", val=30 + i * 40)
-        (src_a / f"{stem}.xml").write_text(_voc(W, H, [(cls, 2, 2, 30, 30)]))
+        (src_a / f"{stem}.xml").write_text(_voc(W, H, [("pole", 0, 0, 40, 40), (cls, 2, 2, 30, 30)]))
 
     # a byte-identical photo appears in BOTH folders with DIFFERENT classes ->
     # must merge to ONE entry holding the union {wire, crossarm_stright}
     shared_img = src_a / "SHARED.JPG"
     _write_img(shared_img, val=200)
     shutil.copy(shared_img, src_b / "SHARED.JPG")               # byte-identical
-    (src_a / "SHARED.xml").write_text(_voc(W, H, [("wire", 5, 5, 40, 40)]))
-    (src_b / "SHARED.xml").write_text(_voc(W, H, [("crossarm_stright", 6, 6, 41, 41)]))
+    (src_a / "SHARED.xml").write_text(_voc(W, H, [("pole", 0, 0, 42, 42), ("wire", 5, 5, 40, 40)]))
+    (src_b / "SHARED.xml").write_text(_voc(W, H, [("pole", 0, 0, 42, 42), ("crossarm_stright", 6, 6, 41, 41)]))
 
     monkeypatch.setattr(config, "YOLO_DB", tmp_path / "yolo_db")
     monkeypatch.setattr(config, "COCO_DB", tmp_path / "coco_db")
@@ -115,3 +116,28 @@ def test_no_image_content_leakage_after_build(tiny_db):
     from data_prep.verify_dataset import assert_no_image_content_leakage
     build_dataset.build_subset("component_above_1000", balance=False)
     assert_no_image_content_leakage("component_above_1000")  # must not raise
+
+
+def test_build_crop_subset_writes_smaller_pole_crops(tiny_db):
+    # the crop-aligned build derives from the SAME source but writes POLE-crop-scale images
+    build_dataset.build_subset("component_above_1000_crop", balance=False)
+    sub = "component_above_1000_crop"
+    ydb = config.YOLO_DB / sub
+    assert (ydb / "manifest.csv").exists()
+    meta = json.loads((ydb / "dataset_meta.json").read_text())
+    assert meta["crop_aligned"] is True and meta["base_subset"] == "component_above_1000"
+    assert meta["crop_mode"] == "anchor"
+
+    # every written crop image is SMALLER than the 64x48 source frame (it's the pole sub-region)
+    imgs = list((ydb / "images").rglob("*.jpg"))
+    assert imgs, "no crop images written"
+    for p in imgs:
+        h, w = cv2.imread(str(p)).shape[:2]
+        assert w < W or h < H, f"{p.name} ({w}x{h}) is not a crop of the {W}x{H} frame"
+
+    # labels still valid and class indices in range; no leakage across splits
+    from data_prep.verify_dataset import find_invalid_labels, assert_no_image_content_leakage
+    assert not find_invalid_labels(ydb / "labels")
+    assert_no_image_content_leakage(sub)
+    # the base full-frame subset is untouched / independent (ablation pair)
+    assert not (config.YOLO_DB / "component_above_1000" / "manifest.csv").exists()

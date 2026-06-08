@@ -5,12 +5,26 @@ def test_class_sets_are_canonical():
     assert config.COMPONENT_ABOVE_CLASSES == ["wire", "h_insulator", "v_insulator", "crossarm_stright"]
     assert config.COMPONENT_BELOW_CLASSES == ["vegetation", "top_crossarm", "om_crossarm", "rust"]
     assert len(config.COMPONENT_CLASSIFICATION_CLASSES) == 14
-    assert set(config.SUBSET_CLASSES) == {"pole", "component_above_1000",
-                                          "component_below_1000", "component_classification"}
+    assert set(config.BASE_SUBSETS) == {"pole", "component_above_1000",
+                                        "component_below_1000", "component_classification"}
     # component_classification draws from the 6th-june folders, not the mem captures
     assert config.SUBSET_SOURCE_DIRS["component_classification"] == config.CONDITION_SOURCE_DIRS
     assert config.SUBSET_SOURCE_DIRS["pole"] == config.SOURCE_DIRS
     assert config.BALANCE_TARGET["component_classification"] == 400
+
+
+def test_crop_subsets_share_base_policy():
+    # each <base>_crop subset mirrors its base's class list and resolves back via base_subset()
+    assert config.CROP_SUBSETS == ["component_above_1000_crop", "component_below_1000_crop",
+                                   "component_classification_crop"]
+    for cs in config.CROP_SUBSETS:
+        base = config.base_subset(cs)
+        assert base + "_crop" == cs
+        assert config.SUBSET_CLASSES[cs] == config.SUBSET_CLASSES[base]
+    assert config.base_subset("pole") == "pole"          # non-crop passes through
+    # crop modes: above/below crop to the pole anchor, condition crops to the component itself
+    assert config.CROP_ALIGN["component_above_1000"][0] == "anchor"
+    assert config.CROP_ALIGN["component_classification"][0] == "self"
 
 def test_split_ratios_sum_to_one():
     assert abs(sum(config.SPLIT_RATIOS.values()) - 1.0) < 1e-9
