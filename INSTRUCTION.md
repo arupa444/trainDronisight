@@ -18,6 +18,53 @@ Conventions: shell commands assume you've `cd`-ed into the repo and **activated 
 
 ---
 
+## TL;DR — full run, copy-paste (clone → train → infer)
+
+The complete happy path on the M4 with the SSD plugged in at `/Volumes/dronisight`. Each step is explained in the numbered sections below; this is the at-a-glance sequence.
+
+```bash
+# 1. Tools (one-time): Xcode CLT + uv
+xcode-select --install
+curl -LsSf https://astral.sh/uv/install.sh | sh        # restart shell after
+
+# 2. Code
+git clone https://github.com/arupa444/trainDronisight.git
+cd trainDronisight
+
+# 3. Python env + deps (torch-MPS, ultralytics, rfdetr, torchvision, opencv, …)
+uv venv
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+
+# 4. Point at the data. Plug the SSD in -> default path just works. (Or copy DBs local: see Section 3.)
+python -c "from shared import config; print(config.YOLO_DB)"   # sanity: prints the DB path
+pytest -q                                                       # sanity: full suite passes
+
+# 5. (Optional) rebuild the DBs from raw annotations — ONLY if you changed taxonomy/CLAHE/split.
+#    Otherwise skip: the 4 subsets are already built. (Do NOT unplug the SSD mid-build.)
+python -m data_prep.build_dataset --subset all
+for s in pole component_above_1000 component_below_1000 component_classification; do
+  python -m data_prep.verify_dataset --subset "$s"; done
+
+# 6. Train all 4 YOLO detectors (the primary models; run on MPS)
+python -m train_yolo.train_pole       --version clahe --epochs 100 --imgsz 640  --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_above_1000    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_below_1000    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+#    (yolo26x at 1280 may OOM on 24 GB -> drop --batch to 2 or use --model yolo26l.pt / yolo26m.pt)
+#    Comparison families: Faster R-CNN (Section 9, MPS) and RF-DETR-L (Section 10, Colab).
+
+# 7. Full 4-stage inference (pole -> above+below on the crop -> condition on each component crop)
+python -m inference.pipeline --image some.jpg \
+  --pole-weights        runs/pole/yolo/weights/best.pt \
+  --comp-above-weights  runs/component_above_1000/yolo/weights/best.pt \
+  --comp-below-weights  runs/component_below_1000/yolo/weights/best.pt \
+  --condition-weights   runs/component_classification/yolo/weights/best.pt \
+  --out runs/inference/result.json
+```
+
+---
+
 ## 1. Prerequisites
 
 1. **macOS** on the M4 Pro, plugged into power.
