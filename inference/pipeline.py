@@ -20,13 +20,15 @@ from data_prep.preprocess import load_oriented_bgr, clahe_image
 BACKENDS = ["yolo", "rfdetr", "frcnn"]
 
 
-def build_detector(backend, weights, conf, imgsz, class_names, resolution=672):
+def build_detector(backend, weights, conf, imgsz, class_names, resolution=672, frcnn_min_size=2000):
     """Pick a detector backend for a pipeline stage. YOLO reads class names from the model;
-    RF-DETR and Faster R-CNN need the explicit class_names (they return numeric class ids)."""
+    RF-DETR and Faster R-CNN need the explicit class_names (they return numeric class ids).
+    frcnn_min_size MUST match the Faster R-CNN training --min-size (default 2000) or small
+    objects are served at the wrong scale."""
     if backend == "rfdetr":
         return RFDetrDetector(weights, class_names, conf=conf, resolution=resolution)
     if backend == "frcnn":
-        return TorchvisionDetector(weights, class_names, conf=conf)
+        return TorchvisionDetector(weights, class_names, conf=conf, min_size=frcnn_min_size)
     return YoloDetector(weights, conf=conf, imgsz=imgsz)
 
 
@@ -120,6 +122,9 @@ def main():
     ap.add_argument("--rfdetr-resolution", type=int, default=672,
                     help="RF-DETR inference resolution for any rfdetr stage; must match training "
                          "(multiple of the model block_size; 672/896/1120 are safe)")
+    ap.add_argument("--frcnn-min-size", type=int, default=2000,
+                    help="Faster R-CNN inference min_size for any frcnn stage; MUST match the "
+                         "training --min-size (default 2000) or small objects collapse")
     # stage 4 (optional): component condition classification, run on each component crop
     ap.add_argument("--condition-weights", default=None,
                     help="component_classification weights; if set, each component gets a 'conditions' list")
@@ -134,14 +139,16 @@ def main():
         image = clahe_image(image)
     from shared import config
     pole_det = build_detector(a.pole_backend, a.pole_weights, a.pole_conf, a.pole_imgsz,
-                              config.POLE_CLASSES, a.rfdetr_resolution)
+                              config.POLE_CLASSES, a.rfdetr_resolution, a.frcnn_min_size)
     above_det = build_detector(a.comp_above_backend, a.comp_above_weights, a.comp_conf,
-                               a.comp_imgsz, config.COMPONENT_ABOVE_CLASSES, a.rfdetr_resolution)
+                               a.comp_imgsz, config.COMPONENT_ABOVE_CLASSES, a.rfdetr_resolution,
+                               a.frcnn_min_size)
     below_det = build_detector(a.comp_below_backend, a.comp_below_weights, a.comp_conf,
-                               a.comp_imgsz, config.COMPONENT_BELOW_CLASSES, a.rfdetr_resolution)
+                               a.comp_imgsz, config.COMPONENT_BELOW_CLASSES, a.rfdetr_resolution,
+                               a.frcnn_min_size)
     condition_det = (build_detector(a.condition_backend, a.condition_weights, a.condition_conf,
                                     a.condition_imgsz, config.COMPONENT_CLASSIFICATION_CLASSES,
-                                    a.rfdetr_resolution)
+                                    a.rfdetr_resolution, a.frcnn_min_size)
                      if a.condition_weights else None)
     result = run_pipeline(image, pole_det, above_det, below_det,
                           a.crop_dir, Path(a.image).name, pole_pad=a.pole_pad,

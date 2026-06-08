@@ -59,16 +59,23 @@ def parse_torchvision_output(output, class_names, conf: float) -> list:
 
 
 class TorchvisionDetector:
-    """Wraps a trained Faster R-CNN state_dict behind the Detector interface."""
+    """Wraps a trained Faster R-CNN state_dict behind the Detector interface.
 
-    def __init__(self, weights_path, class_names, conf=0.5, device=None):
+    min_size/max_size MUST match training (train_faster_rcnn.train defaults: 2000/3000), or
+    the GeneralizedRCNNTransform serves objects at a different scale than trained and small
+    objects (thin wires/insulators) collapse. Defaults here mirror the trainer; override if
+    you trained with a different --min-size."""
+
+    def __init__(self, weights_path, class_names, conf=0.5, device=None,
+                 min_size=2000, max_size=None):
         import torch
         from shared.device import select_device
         from train_faster_rcnn.model import build_fasterrcnn
         self.class_names = class_names
         self.conf = conf
         self.device = device or select_device()
-        self.model = build_fasterrcnn(len(class_names))
+        max_size = max_size or round(min_size * 1.5)   # mirrors train.py's max_size rule
+        self.model = build_fasterrcnn(len(class_names), min_size=min_size, max_size=max_size)
         self.model.load_state_dict(torch.load(weights_path, map_location=self.device))
         self.model.eval().to(self.device)
 

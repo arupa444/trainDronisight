@@ -233,6 +233,10 @@ def build_subset(subset: str, balance: bool):
     df = pd.DataFrame(manifest_rows)
     (config.YOLO_DB / subset).mkdir(parents=True, exist_ok=True)
     df.to_csv(config.YOLO_DB / subset / "manifest.csv", index=False)
+    # sample_weights.csv is INFORMATIONAL ONLY: class balance is realized entirely by the
+    # pre-balanced DB written above (cap / oversample / target). No trainer consumes these
+    # weights today -- they're emitted as an alternative inverse-frequency sampling schedule
+    # if a future trainer opts into WeightedRandomSampler. Not an active second mechanism.
     weights = sample_weights(items, class_names)
     pd.DataFrame({"name": [it["key"] for it in items], "weight": weights}) \
         .to_csv(config.YOLO_DB / subset / "sample_weights.csv", index=False)

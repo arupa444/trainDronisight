@@ -68,8 +68,8 @@ def test_build_detector_selects_backend(monkeypatch):
         calls["rfdetr"] = (w, names, conf, resolution)
         return "R"
 
-    def fake_frcnn(w, names, conf):
-        calls["frcnn"] = (w, names, conf)
+    def fake_frcnn(w, names, conf, min_size):
+        calls["frcnn"] = (w, names, conf, min_size)
         return "F"
 
     monkeypatch.setattr(P, "YoloDetector", fake_yolo)
@@ -79,5 +79,16 @@ def test_build_detector_selects_backend(monkeypatch):
     assert calls["yolo"] == ("y.pt", 0.25, 1280)
     assert P.build_detector("rfdetr", "r.pth", 0.3, 1280, ["wire"], resolution=1008) == "R"
     assert calls["rfdetr"] == ("r.pth", ["wire"], 0.3, 1008)
+    # frcnn must be served at the TRAINING min_size (default 2000), not torchvision's 800
     assert P.build_detector("frcnn", "f.pt", 0.4, 1280, ["wire"]) == "F"
-    assert calls["frcnn"] == ("f.pt", ["wire"], 0.4)
+    assert calls["frcnn"] == ("f.pt", ["wire"], 0.4, 2000)
+    assert P.build_detector("frcnn", "f.pt", 0.4, 1280, ["wire"], frcnn_min_size=1333) == "F"
+    assert calls["frcnn"] == ("f.pt", ["wire"], 0.4, 1333)
+
+
+def test_torchvision_detector_defaults_to_training_resize():
+    # regression guard: serving FRCNN at torchvision's 800/1333 instead of the trained
+    # 2000/3000 collapses small-object detection. The detector default must match training.
+    import inspect
+    from inference.backends import TorchvisionDetector
+    assert inspect.signature(TorchvisionDetector.__init__).parameters["min_size"].default == 2000
