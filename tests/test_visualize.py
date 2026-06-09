@@ -1,5 +1,5 @@
 import numpy as np
-from inference.visualize import render_layers, save_layers, LAYERS, _condition_full_box
+from inference.visualize import render_layers, save_layers, LAYERS
 
 
 def _result():
@@ -12,12 +12,6 @@ def _result():
         "components_below": [{"class": "vegetation", "confidence": 0.4,
                              "box_full": [0, 100, 99, 199], "box_crop": [0, 0, 99, 99], "crop_path": "v.jpg"}],
     }]}
-
-
-def test_condition_box_remapped_to_full_frame():
-    comp = _result()["poles"][0]["components_above"][0]
-    # box_comp [2,3,30,35] shifted by component top-left (20,30)
-    assert _condition_full_box(comp) == [22, 33, 50, 65]
 
 
 def test_render_layers_returns_four_views_same_shape():

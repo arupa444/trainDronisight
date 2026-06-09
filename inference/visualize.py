@@ -33,18 +33,11 @@ def _draw_box(img, box, label, color):
     cv2.putText(img, label, (x1 + 1, ly - bl), cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), th)
 
 
-def _condition_full_box(comp):
-    """Best in-family condition box remapped to the full frame, or None."""
-    conds = comp.get("conditions") or []
-    if not conds:
-        return None
-    bc = conds[0]["box_comp"]
-    ox, oy = comp["box_full"][0], comp["box_full"][1]
-    return [bc[0] + ox, bc[1] + oy, bc[2] + ox, bc[3] + oy]
-
-
 def render_layers(frame_bgr, result):
-    """frame_bgr: the EXIF-oriented full frame (draw on a copy). Returns {layer: annotated bgr}."""
+    """frame_bgr: the EXIF-oriented full frame (draw on a copy). Returns {layer: annotated bgr}.
+    ONE box per component (post-NMS). The condition is shown ON the component box (no separate
+    near-duplicate box): the `conditions` layer relabels the component box with its condition,
+    and the `all` layer labels each box with class + condition inline."""
     out = {k: frame_bgr.copy() for k in LAYERS}
     for pole in result["poles"]:
         plabel = f"pole {pole['confidence']:.2f}"
@@ -52,15 +45,14 @@ def render_layers(frame_bgr, result):
         _draw_box(out["all"], pole["box"], plabel, C_POLE)
         for grp, color in (("components_above", C_ABOVE), ("components_below", C_BELOW)):
             for c in pole.get(grp, []):
-                clabel = f"{c['class']} {c['confidence']:.2f}"
-                _draw_box(out["components"], c["box_full"], clabel, color)
-                _draw_box(out["all"], c["box_full"], clabel, color)
+                box = c["box_full"]
+                _draw_box(out["components"], box, f"{c['class']} {c['confidence']:.2f}", color)
                 cond = c.get("condition")
-                cbox = _condition_full_box(c)
-                if cond and cbox is not None:
-                    condlabel = f"{cond['class']} {cond['confidence']:.2f}"
-                    _draw_box(out["conditions"], cbox, condlabel, C_COND)
-                    _draw_box(out["all"], cbox, condlabel, C_COND)
+                if cond:
+                    _draw_box(out["conditions"], box, f"{cond['class']} {cond['confidence']:.2f}", C_COND)
+                    _draw_box(out["all"], box, f"{c['class']} | {cond['class']} {cond['confidence']:.2f}", color)
+                else:
+                    _draw_box(out["all"], box, f"{c['class']} {c['confidence']:.2f}", color)
     return out
 
 

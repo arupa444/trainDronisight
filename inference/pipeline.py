@@ -64,52 +64,70 @@ def _classify_condition(comp_crop, condition_detector, component_class):
     return best, all_valid
 
 
-def _detect_on_crop(image, pole_crop, offset, detector, crop_dir, prefix,
-                    condition_detector=None):
-    """Run `detector` on the pole crop, remap each detection to the full frame, save its crop,
-    and (if a condition detector is given) classify each component crop's condition (mapped to
-    the component's family)."""
-    ox, oy = offset
-    out = []
-    for ci, comp in enumerate(detector.predict(pole_crop)):
-        full = shift_detection(comp, ox, oy)
-        comp_crop, _ = crop_with_pad(image, full.box, pad_frac=0.0)
-        entry = {
-            "class": comp.class_name,
-            "confidence": comp.confidence,
-            "box_crop": [int(v) for v in comp.box],
-            "box_full": [int(v) for v in full.box],
-            "crop_path": _save_crop(comp_crop, crop_dir, f"{prefix}_comp{ci}.jpg"),
-        }
-        best, all_valid = _classify_condition(comp_crop, condition_detector, comp.class_name)
-        if all_valid is not None:                  # condition stage ran for this component family
-            entry["condition"] = best              # the mapped, in-family top condition (or None)
-            entry["conditions"] = all_valid         # all in-family condition detections
-        out.append(entry)
-    return out
+def _iou_xyxy(a, b):
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    iw, ih = max(0.0, ix1 - ix0), max(0.0, iy1 - iy0)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    aa = (a[2] - a[0]) * (a[3] - a[1])
+    ba = (b[2] - b[0]) * (b[3] - b[1])
+    return inter / (aa + ba - inter)
+
+
+def nms_components(items, iou_thresh):
+    """Class-agnostic greedy NMS so each PHYSICAL object yields ONE box. items: list of
+    (comp_det_in_crop_coords, full_det, group). Keeps the highest-confidence detection and drops
+    any later box whose full-frame IoU with a kept box is >= iou_thresh — this removes the same
+    insulator/crossarm detected by BOTH the above & below detectors (and intra-detector dupes).
+    A high threshold keeps genuinely co-located distinct objects (e.g. a wire crossing a crossarm)."""
+    items = sorted(items, key=lambda t: t[1].confidence, reverse=True)
+    kept = []
+    for it in items:
+        if all(_iou_xyxy(it[1].box, k[1].box) < iou_thresh for k in kept):
+            kept.append(it)
+    return kept
 
 
 def run_pipeline(image, pole_detector, above_detector, below_detector,
-                 crop_dir, image_name, pole_pad=0.05, condition_detector=None, name_stem=None):
-    """image: BGR ndarray. Returns the structured result dict. Both component detectors run
-    on the padded pole crop; no pole -> no component detection. If condition_detector is
-    given, each detected component also carries a 'conditions' list (stage 4). `name_stem`
-    overrides the prefix used for saved crop filenames (default = the image's stem)."""
+                 crop_dir, image_name, pole_pad=0.05, condition_detector=None, name_stem=None,
+                 nms_iou=0.55):
+    """image: BGR ndarray. Returns the structured result dict. Both component detectors run on
+    the padded pole crop; their boxes are remapped to the full frame and de-duplicated with
+    class-agnostic NMS (nms_iou; set >=1.0 to disable) so each object gets ONE box. Each surviving
+    component carries its mapped `condition` (stage 4). `name_stem` overrides saved-crop filenames."""
     stem = name_stem or Path(image_name).stem
     result = {"image": image_name, "poles": []}
     for pi, pole in enumerate(pole_detector.predict(image)):
-        pole_crop, offset = crop_with_pad(image, pole.box, pad_frac=pole_pad)
+        pole_crop, (ox, oy) = crop_with_pad(image, pole.box, pad_frac=pole_pad)
         pole_crop_path = _save_crop(pole_crop, crop_dir, f"{stem}_pole{pi}.jpg")
+        # both component detectors on the pole crop -> remap to full frame -> cross-detector NMS
+        combined = ([(c, shift_detection(c, ox, oy), "above") for c in above_detector.predict(pole_crop)]
+                    + [(c, shift_detection(c, ox, oy), "below") for c in below_detector.predict(pole_crop)])
+        if nms_iou and nms_iou < 1.0:
+            combined = nms_components(combined, nms_iou)
+        above_out, below_out = [], []
+        for ci, (comp, full, grp) in enumerate(combined):
+            comp_crop, _ = crop_with_pad(image, full.box, pad_frac=0.0)
+            entry = {
+                "class": comp.class_name,
+                "confidence": comp.confidence,
+                "box_crop": [int(v) for v in comp.box],
+                "box_full": [int(v) for v in full.box],
+                "crop_path": _save_crop(comp_crop, crop_dir, f"{stem}_pole{pi}_{grp}_comp{ci}.jpg"),
+            }
+            best, all_valid = _classify_condition(comp_crop, condition_detector, comp.class_name)
+            if all_valid is not None:               # condition stage ran for this component family
+                entry["condition"] = best           # the mapped, in-family top condition (or None)
+                entry["conditions"] = all_valid       # all in-family condition detections
+            (above_out if grp == "above" else below_out).append(entry)
         result["poles"].append({
             "box": [int(v) for v in pole.box],
             "confidence": pole.confidence,
             "crop_path": pole_crop_path,
-            "components_above": _detect_on_crop(image, pole_crop, offset, above_detector,
-                                                crop_dir, f"{stem}_pole{pi}_above",
-                                                condition_detector),
-            "components_below": _detect_on_crop(image, pole_crop, offset, below_detector,
-                                                crop_dir, f"{stem}_pole{pi}_below",
-                                                condition_detector),
+            "components_above": above_out,
+            "components_below": below_out,
         })
     return result
 
@@ -203,6 +221,9 @@ def main():
                     help="pole-stage confidence; low favors recall")
     ap.add_argument("--comp-conf", type=float, default=0.25,
                     help="confidence for both component detectors")
+    ap.add_argument("--nms-iou", type=float, default=0.55,
+                    help="cross-detector NMS IoU: one box per physical object (lower = more aggressive de-dup)")
+    ap.add_argument("--no-nms", action="store_true", help="disable cross-detector de-duplication")
     ap.add_argument("--pole-imgsz", type=int, default=640)     # match pole training
     ap.add_argument("--comp-imgsz", type=int, default=1280)    # match component training
     ap.add_argument("--no-clahe", action="store_true",
@@ -257,7 +278,8 @@ def main():
         out_stem = f"{p.stem}_inference"
         result = run_pipeline(image, pole_det, above_det, below_det,
                               crop_dir, p.name, pole_pad=a.pole_pad,
-                              condition_detector=condition_det, name_stem=out_stem)
+                              condition_detector=condition_det, name_stem=out_stem,
+                              nms_iou=(1.0 if a.no_nms else a.nms_iou))
         results.append(result)
         rows.extend(result_to_rows(result))
         if not a.no_viz:

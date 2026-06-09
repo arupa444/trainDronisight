@@ -136,6 +136,33 @@ def test_result_to_rows_pole_with_no_components():
     assert len(rows) == 1 and rows[0]["component_class"] == "" and rows[0]["pole_confidence"] == 0.5
 
 
+def test_nms_dedups_same_object_across_detectors(tmp_path):
+    # above & below detectors BOTH fire on the SAME crossarm region (high overlap) -> NMS keeps ONE
+    # (the higher-confidence above box); a far-away wire is kept.
+    img = np.zeros((300, 300, 3), np.uint8)
+    pole_det = _Fake([Detection("pole", 0.95, (0, 0, 300, 300))])
+    above_det = _Fake([Detection("crossarm_stright", 0.85, (50, 50, 150, 150)),
+                       Detection("wire", 0.6, (250, 10, 270, 30))])
+    below_det = _Fake([Detection("om_crossarm", 0.7, (52, 52, 152, 152))])   # ~same box as crossarm
+    out = run_pipeline(img, pole_det, above_det, below_det, crop_dir=tmp_path,
+                       image_name="x.jpg", pole_pad=0.0, nms_iou=0.55)
+    classes = ([c["class"] for c in out["poles"][0]["components_above"]]
+               + [c["class"] for c in out["poles"][0]["components_below"]])
+    assert "om_crossarm" not in classes                 # suppressed (overlapped a higher-conf box)
+    assert sorted(classes) == ["crossarm_stright", "wire"]
+
+
+def test_no_nms_keeps_all(tmp_path):
+    img = np.zeros((300, 300, 3), np.uint8)
+    pole_det = _Fake([Detection("pole", 0.95, (0, 0, 300, 300))])
+    above_det = _Fake([Detection("crossarm_stright", 0.85, (50, 50, 150, 150))])
+    below_det = _Fake([Detection("om_crossarm", 0.7, (52, 52, 152, 152))])
+    out = run_pipeline(img, pole_det, above_det, below_det, crop_dir=tmp_path,
+                       image_name="x.jpg", pole_pad=0.0, nms_iou=1.0)   # disabled
+    assert len(out["poles"][0]["components_above"]) == 1
+    assert len(out["poles"][0]["components_below"]) == 1
+
+
 def test_run_basename_file_and_dir(tmp_path):
     from inference.pipeline import run_basename
     assert run_basename("some/path/DJI_0070_D.JPG") == "DJI_0070_D_inference"   # file -> stem
