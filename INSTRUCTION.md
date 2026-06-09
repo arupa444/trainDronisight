@@ -257,16 +257,18 @@ python -m inference.infer_components  --image crop.jpg --weights runs/component_
 ```
 
 ### Full four-stage pipeline (with CSV)
-`--image` is a **file or a directory** (batches the whole folder into one CSV). Outputs both a structured `--out` JSON and a flat `--out-csv` (one row per detected component, condition inline).
+`--image` is a **file or a directory** (batches the whole folder into one CSV). Each run is saved to its **own auto-named folder** under `--out-dir` so nothing is overwritten:
+`<out-dir>/<input>_inference[N]/` — `<input>` is the file stem or directory name, with `2/3/…` appended if it already exists. Inside: `result.json`, `result.csv`, `crops/`, and (unless `--no-viz`) `viz/{pole,components,conditions,all}/`. Every saved image is named `<img-stem>_inference.jpg`.
 ```bash
 python -m inference.pipeline \
-  --image some.jpg \
+  --image "some.jpg_or_folder/" \
   --pole-weights        runs/pole/yolo/weights/best.pt \
   --comp-above-weights  runs/component_above_1000/yolo/weights/best.pt \
   --comp-below-weights  runs/component_below_1000/yolo/weights/best.pt \
   --condition-weights   runs/component_classification/yolo/weights/best.pt \
-  --crop-dir runs/inference/crops --out runs/inference/result.json --out-csv runs/inference/result.csv
+  --out-dir runs/inference          # -> runs/inference/some_inference/{result.csv,result.json,crops/,viz/}
 ```
+(Override individual paths with `--out/--out-csv/--crop-dir/--viz-dir` if you need a specific location; `--no-viz` skips the annotated images.)
 - **Condition mapping:** the condition model runs on each component crop, but its output is **filtered to that component's family** (`config.COMPONENT_TO_CONDITIONS`) — a `v_insulator` crop can only get a `v_insulator_*` condition, never a crossarm/wire one; `vegetation`/`rust` have no condition family (left blank). The top in-family condition is `condition`; all in-family ones are `conditions`.
 - **`result.csv` columns:** `image, pole_index, pole_confidence, pole_x1..y2, group(above/below), component_class, component_confidence, comp_x1..y2, condition_class, condition_confidence, crop_path`.
 - **Annotated views:** add `--viz-dir runs/inference/viz` to also write 4 boxed images per frame:

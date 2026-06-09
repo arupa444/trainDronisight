@@ -136,6 +136,26 @@ def test_result_to_rows_pole_with_no_components():
     assert len(rows) == 1 and rows[0]["component_class"] == "" and rows[0]["pole_confidence"] == 0.5
 
 
+def test_run_basename_file_and_dir(tmp_path):
+    from inference.pipeline import run_basename
+    assert run_basename("some/path/DJI_0070_D.JPG") == "DJI_0070_D_inference"   # file -> stem
+    d = tmp_path / "kml 1"; d.mkdir()
+    assert run_basename(str(d)) == "kml 1_inference"                            # dir -> name
+
+
+def test_unique_run_dir_never_overwrites(tmp_path):
+    from inference.pipeline import unique_run_dir
+    img = "x/DJI_a.JPG"
+    d1 = unique_run_dir(tmp_path, img)
+    assert d1.name == "DJI_a_inference"
+    d1.mkdir(parents=True)
+    d2 = unique_run_dir(tmp_path, img)        # first one now exists -> must differ
+    assert d2.name == "DJI_a_inference2" and not d2.exists()
+    d2.mkdir()
+    d3 = unique_run_dir(tmp_path, img)
+    assert d3.name == "DJI_a_inference3"
+
+
 def test_torchvision_detector_defaults_to_training_resize():
     # regression guard: serving FRCNN at torchvision's 800/1333 instead of the trained
     # 2000/3000 collapses small-object detection. The detector default must match training.

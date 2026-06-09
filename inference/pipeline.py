@@ -90,11 +90,12 @@ def _detect_on_crop(image, pole_crop, offset, detector, crop_dir, prefix,
 
 
 def run_pipeline(image, pole_detector, above_detector, below_detector,
-                 crop_dir, image_name, pole_pad=0.05, condition_detector=None):
+                 crop_dir, image_name, pole_pad=0.05, condition_detector=None, name_stem=None):
     """image: BGR ndarray. Returns the structured result dict. Both component detectors run
     on the padded pole crop; no pole -> no component detection. If condition_detector is
-    given, each detected component also carries a 'conditions' list (stage 4)."""
-    stem = Path(image_name).stem
+    given, each detected component also carries a 'conditions' list (stage 4). `name_stem`
+    overrides the prefix used for saved crop filenames (default = the image's stem)."""
+    stem = name_stem or Path(image_name).stem
     result = {"image": image_name, "poles": []}
     for pi, pole in enumerate(pole_detector.predict(image)):
         pole_crop, offset = crop_with_pad(image, pole.box, pad_frac=pole_pad)
@@ -163,18 +164,40 @@ def _image_paths(arg):
     return [p]
 
 
+def run_basename(image_arg):
+    """Name a run after its input: '<dir>_inference' for a folder, '<stem>_inference' for a file."""
+    p = Path(image_arg)
+    stem = p.name if p.is_dir() else p.stem
+    return f"{stem}_inference"
+
+
+def unique_run_dir(out_dir, image_arg):
+    """A fresh run folder under out_dir so a new inference never overwrites a previous one:
+    <input>_inference, then _inference2, _inference3, … if it already exists."""
+    base = Path(out_dir) / run_basename(image_arg)
+    if not base.exists():
+        return base
+    i = 2
+    while (base.parent / f"{base.name}{i}").exists():
+        i += 1
+    return base.parent / f"{base.name}{i}"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--image", required=True, help="an image file OR a directory of images")
     ap.add_argument("--pole-weights", required=True)
     ap.add_argument("--comp-above-weights", required=True)
     ap.add_argument("--comp-below-weights", required=True)
-    ap.add_argument("--crop-dir", default="runs/inference/crops")
-    ap.add_argument("--out", default="runs/inference/result.json")
-    ap.add_argument("--out-csv", default="runs/inference/result.csv",
-                    help="flat CSV: one row per detected component with its mapped condition")
-    ap.add_argument("--viz-dir", default=None,
-                    help="if set, write 4 annotated views per image: <viz>/{pole,components,conditions,all}/")
+    # Each run is saved to its OWN folder so nothing is overwritten: <out-dir>/<input>_inference[N]/
+    # with result.json, result.csv, crops/, and viz/{pole,components,conditions,all}/.
+    ap.add_argument("--out-dir", default="runs/inference",
+                    help="base dir; a per-run subfolder '<input>_inference' is created inside it")
+    ap.add_argument("--crop-dir", default=None, help="override crop dir (default <run>/crops)")
+    ap.add_argument("--out", default=None, help="override JSON path (default <run>/result.json)")
+    ap.add_argument("--out-csv", default=None, help="override CSV path (default <run>/result.csv)")
+    ap.add_argument("--viz-dir", default=None, help="override viz dir (default <run>/viz)")
+    ap.add_argument("--no-viz", action="store_true", help="skip the 4 annotated-view images")
     ap.add_argument("--pole-pad", type=float, default=0.05)
     ap.add_argument("--pole-conf", type=float, default=0.12,   # recall-leaning (Stage-1: don't miss poles)
                     help="pole-stage confidence; low favors recall")
@@ -215,30 +238,41 @@ def main():
                                     a.rfdetr_resolution, a.frcnn_min_size)
                      if a.condition_weights else None)
 
+    # Per-run output folder named after the input; never overwrites a previous run.
+    run_dir = unique_run_dir(a.out_dir, a.image)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    crop_dir = a.crop_dir or str(run_dir / "crops")
+    out_json = a.out or str(run_dir / "result.json")
+    out_csv = a.out_csv or str(run_dir / "result.csv")
+    viz_dir = a.viz_dir or str(run_dir / "viz")
+
     paths = _image_paths(a.image)
     results, rows = [], []
     for p in paths:
         # EXIF-orient ONCE; CLAHE is applied for inference (pole runs on it and every crop
         # inherits the CLAHE), but we draw the viz on the un-CLAHE'd `oriented` frame (geometry
-        # is identical, colors look natural).
+        # is identical, colors look natural). Per-image outputs are named '<stem>_inference'.
         oriented = load_oriented_bgr(str(p))
         image = clahe_image(oriented) if not a.no_clahe else oriented
+        out_stem = f"{p.stem}_inference"
         result = run_pipeline(image, pole_det, above_det, below_det,
-                              a.crop_dir, p.name, pole_pad=a.pole_pad,
-                              condition_detector=condition_det)
+                              crop_dir, p.name, pole_pad=a.pole_pad,
+                              condition_detector=condition_det, name_stem=out_stem)
         results.append(result)
         rows.extend(result_to_rows(result))
-        if a.viz_dir:
+        if not a.no_viz:
             from inference.visualize import save_layers
-            save_layers(oriented, result, a.viz_dir, Path(p.name).stem)
+            save_layers(oriented, result, viz_dir, out_stem)
         print(f"[{p.name}] poles={len(result['poles'])} "
               f"components={sum(len(x['components_above'])+len(x['components_below']) for x in result['poles'])}")
 
-    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(a.out).write_text(json.dumps(results if len(results) != 1 else results[0], indent=2))
-    write_csv(rows, a.out_csv)
-    print(f"\nWrote {len(rows)} component rows for {len(paths)} image(s) -> {a.out_csv}")
-    print(f"Full structured JSON -> {a.out}")
+    Path(out_json).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_json).write_text(json.dumps(results if len(results) != 1 else results[0], indent=2))
+    write_csv(rows, out_csv)
+    print(f"\n== Run saved to: {run_dir} ==")
+    print(f"  {len(rows)} component rows across {len(paths)} image(s)")
+    print("  contents: result.json, result.csv, crops/" +
+          ("" if a.no_viz else ", viz/{pole,components,conditions,all}/"))
 
 
 if __name__ == "__main__":
