@@ -73,10 +73,17 @@ BASE_SUBSETS = list(SUBSET_CLASSES)
 # CROP_ALIGN[base] = (mode, anchor_classes, pad_frac, min_visible_frac):
 #   * "anchor": crop to each anchor box (the pole) + pad; keep in-subset boxes >= min_visible in the crop.
 #   * "self":   crop to each in-subset box + pad (the component itself, with a little context).
+# Padding around a COMPONENT when cropping it for the condition (classification) model. This is
+# the SINGLE source of truth used BOTH when building component_classification_crop ("self" mode
+# below) AND when the inference pipeline crops a detected component to feed the condition model,
+# so train scale/context == serve scale/context. Subtle insulator defects (band/chip_off) need the
+# surrounding context, and padding also tolerates imperfect detector boxes.
+CONDITION_CROP_PAD = 0.25
+
 CROP_ALIGN = {
     "component_above_1000": ("anchor", tuple(POLE_CLASSES), 0.05, 0.30),
     "component_below_1000": ("anchor", tuple(POLE_CLASSES), 0.05, 0.30),
-    "component_classification": ("self", None, 0.10, 0.50),
+    "component_classification": ("self", None, CONDITION_CROP_PAD, 0.50),
 }
 CROP_SUBSETS = [b + "_crop" for b in CROP_ALIGN]
 for _b in CROP_ALIGN:

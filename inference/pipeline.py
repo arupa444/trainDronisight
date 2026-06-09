@@ -92,11 +92,13 @@ def nms_components(items, iou_thresh):
 
 def run_pipeline(image, pole_detector, above_detector, below_detector,
                  crop_dir, image_name, pole_pad=0.05, condition_detector=None, name_stem=None,
-                 nms_iou=0.55):
+                 nms_iou=0.55, condition_pad=config.CONDITION_CROP_PAD):
     """image: BGR ndarray. Returns the structured result dict. Both component detectors run on
     the padded pole crop; their boxes are remapped to the full frame and de-duplicated with
     class-agnostic NMS (nms_iou; set >=1.0 to disable) so each object gets ONE box. Each surviving
-    component carries its mapped `condition` (stage 4). `name_stem` overrides saved-crop filenames."""
+    component carries its mapped `condition` (stage 4) — the condition model is fed a crop padded by
+    `condition_pad` (matching how component_classification_crop was built). `name_stem` overrides
+    saved-crop filenames."""
     stem = name_stem or Path(image_name).stem
     result = {"image": image_name, "poles": []}
     for pi, pole in enumerate(pole_detector.predict(image)):
@@ -109,7 +111,8 @@ def run_pipeline(image, pole_detector, above_detector, below_detector,
             combined = nms_components(combined, nms_iou)
         above_out, below_out = [], []
         for ci, (comp, full, grp) in enumerate(combined):
-            comp_crop, _ = crop_with_pad(image, full.box, pad_frac=0.0)
+            comp_crop, _ = crop_with_pad(image, full.box, pad_frac=0.0)            # tight, for saving
+            cond_crop, _ = crop_with_pad(image, full.box, pad_frac=condition_pad)  # padded, for condition (matches training)
             entry = {
                 "class": comp.class_name,
                 "confidence": comp.confidence,
@@ -117,7 +120,7 @@ def run_pipeline(image, pole_detector, above_detector, below_detector,
                 "box_full": [int(v) for v in full.box],
                 "crop_path": _save_crop(comp_crop, crop_dir, f"{stem}_pole{pi}_{grp}_comp{ci}.jpg"),
             }
-            best, all_valid = _classify_condition(comp_crop, condition_detector, comp.class_name)
+            best, all_valid = _classify_condition(cond_crop, condition_detector, comp.class_name)
             if all_valid is not None:               # condition stage ran for this component family
                 entry["condition"] = best           # the mapped, in-family top condition (or None)
                 entry["conditions"] = all_valid       # all in-family condition detections
@@ -244,6 +247,9 @@ def main():
     ap.add_argument("--condition-backend", choices=BACKENDS, default="yolo")
     ap.add_argument("--condition-conf", type=float, default=0.25)
     ap.add_argument("--condition-imgsz", type=int, default=1280)
+    ap.add_argument("--condition-pad", type=float, default=config.CONDITION_CROP_PAD,
+                    help="padding around each component when cropping it for the condition model; "
+                         "MUST match how component_classification_crop was built (config.CONDITION_CROP_PAD)")
     a = ap.parse_args()
     # build the detectors ONCE, then run over every image (file or directory).
     pole_det = build_detector(a.pole_backend, a.pole_weights, a.pole_conf, a.pole_imgsz,
@@ -279,7 +285,8 @@ def main():
         result = run_pipeline(image, pole_det, above_det, below_det,
                               crop_dir, p.name, pole_pad=a.pole_pad,
                               condition_detector=condition_det, name_stem=out_stem,
-                              nms_iou=(1.0 if a.no_nms else a.nms_iou))
+                              nms_iou=(1.0 if a.no_nms else a.nms_iou),
+                              condition_pad=a.condition_pad)
         results.append(result)
         rows.extend(result_to_rows(result))
         if not a.no_viz:
