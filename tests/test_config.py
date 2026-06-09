@@ -13,6 +13,21 @@ def test_class_sets_are_canonical():
     assert config.BALANCE_TARGET["component_classification"] == 400
 
 
+def test_component_to_conditions_partitions_all_14_classes():
+    # every mapped condition is a real condition class; the 6 families partition all 14 exactly
+    flat = [c for v in config.COMPONENT_TO_CONDITIONS.values() for c in v]
+    assert set(flat) == set(config.COMPONENT_CLASSIFICATION_CLASSES)   # exact coverage
+    assert len(flat) == len(config.COMPONENT_CLASSIFICATION_CLASSES)   # no overlaps (14, once each)
+    # keys are real component classes (above ∪ below); vegetation/rust have NO condition family
+    comp_classes = set(config.COMPONENT_ABOVE_CLASSES) | set(config.COMPONENT_BELOW_CLASSES)
+    assert set(config.COMPONENT_TO_CONDITIONS) <= comp_classes
+    assert "vegetation" not in config.COMPONENT_TO_CONDITIONS
+    assert "rust" not in config.COMPONENT_TO_CONDITIONS
+    # the naming bridge: the detector's crossarm_stright maps to straight_crossarm_* conditions
+    assert config.COMPONENT_TO_CONDITIONS["crossarm_stright"] == \
+        ["straight_crossarm_normal", "straight_crossarm_band"]
+
+
 def test_crop_subsets_share_base_policy():
     # each <base>_crop subset mirrors its base's class list and resolves back via base_subset()
     assert config.CROP_SUBSETS == ["component_above_1000_crop", "component_below_1000_crop",

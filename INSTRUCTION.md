@@ -250,12 +250,14 @@ threshold on **val**, freeze it, touch **test** once. Rare classes like `rust` h
 ## 13. Inference
 
 ### Single stage (debugging; YOLO CLIs)
+`--image` takes a file **or a directory**. `--out-csv` writes a flat per-detection CSV (`image,class,confidence,x1,y1,x2,y2`); `--out` writes JSON.
 ```bash
-python -m inference.infer_pole       --image some.jpg --weights runs/pole/yolo/weights/best.pt --conf 0.25
-python -m inference.infer_components  --image crop.jpg --weights runs/component_above_1000/yolo/weights/best.pt --conf 0.25
+python -m inference.infer_pole       --image some.jpg --weights runs/pole/yolo/weights/best.pt --out-csv pole.csv
+python -m inference.infer_components  --image crop.jpg --weights runs/component_above_1000/yolo/weights/best.pt --out-csv comp.csv
 ```
 
-### Full four-stage pipeline
+### Full four-stage pipeline (with CSV)
+`--image` is a **file or a directory** (batches the whole folder into one CSV). Outputs both a structured `--out` JSON and a flat `--out-csv` (one row per detected component, condition inline).
 ```bash
 python -m inference.pipeline \
   --image some.jpg \
@@ -263,8 +265,10 @@ python -m inference.pipeline \
   --comp-above-weights  runs/component_above_1000/yolo/weights/best.pt \
   --comp-below-weights  runs/component_below_1000/yolo/weights/best.pt \
   --condition-weights   runs/component_classification/yolo/weights/best.pt \
-  --crop-dir runs/inference/crops --out runs/inference/result.json
+  --crop-dir runs/inference/crops --out runs/inference/result.json --out-csv runs/inference/result.csv
 ```
+- **Condition mapping:** the condition model runs on each component crop, but its output is **filtered to that component's family** (`config.COMPONENT_TO_CONDITIONS`) — a `v_insulator` crop can only get a `v_insulator_*` condition, never a crossarm/wire one; `vegetation`/`rust` have no condition family (left blank). The top in-family condition is `condition`; all in-family ones are `conditions`.
+- **`result.csv` columns:** `image, pole_index, pole_confidence, pole_x1..y2, group(above/below), component_class, component_confidence, comp_x1..y2, condition_class, condition_confidence, crop_path`.
 - **Preprocessing matches training:** EXIF-orient + CLAHE applied **once** on the full frame; every
   crop inherits it. Pass `--no-clahe` only for `orig`-trained weights.
 - **Stage 4 is optional:** omit `--condition-weights` to stop at component detection.
@@ -288,6 +292,7 @@ python -m inference.pipeline \
       "box": [x1,y1,x2,y2], "confidence": 0.97, "crop_path": "…/some_pole0.jpg",
       "components_above": [ { "class": "v_insulator", "confidence": 0.88,
           "box_full": [..], "box_crop": [..], "crop_path": "…_above_comp0.jpg",
+          "condition": { "class": "v_insulator_broken", "confidence": 0.71 },
           "conditions": [ { "class": "v_insulator_broken", "confidence": 0.71, "box_comp": [..] } ] } ],
       "components_below": [ { "class": "vegetation", "confidence": 0.41, "box_full": [..], "box_crop": [..], "crop_path": "…_below_comp0.jpg" } ]
   } ] }

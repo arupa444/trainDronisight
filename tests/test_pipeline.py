@@ -86,6 +86,56 @@ def test_build_detector_selects_backend(monkeypatch):
     assert calls["frcnn"] == ("f.pt", ["wire"], 0.4, 1333)
 
 
+def test_condition_is_mapped_to_component_family(tmp_path):
+    # condition model returns BOTH an out-of-family (wire_normal) and an in-family
+    # (v_insulator_broken) detection; the pipeline must keep ONLY the in-family one for a
+    # v_insulator component, and attach NO condition to a vegetation component.
+    img = np.zeros((300, 300, 3), np.uint8)
+    pole_det = _Fake([Detection("pole", 0.95, (10, 10, 260, 260))])
+    above_det = _Fake([Detection("v_insulator", 0.8, (5, 5, 60, 60))])
+    below_det = _Fake([Detection("vegetation", 0.7, (5, 70, 60, 120))])
+    cond_det = _Fake([Detection("wire_normal", 0.9, (0, 0, 10, 10)),        # WRONG family -> dropped
+                      Detection("v_insulator_broken", 0.7, (1, 1, 20, 20)),  # right family -> kept
+                      Detection("straight_crossarm_band", 0.99, (0, 0, 5, 5))])  # wrong family -> dropped
+    out = run_pipeline(img, pole_det, above_det, below_det, crop_dir=tmp_path,
+                       image_name="x.jpg", pole_pad=0.0, condition_detector=cond_det)
+    ins = out["poles"][0]["components_above"][0]
+    assert ins["class"] == "v_insulator"
+    assert ins["condition"] == {"class": "v_insulator_broken", "confidence": 0.7}  # mapped, not the 0.99 crossarm
+    assert [c["class"] for c in ins["conditions"]] == ["v_insulator_broken"]        # out-of-family removed
+    veg = out["poles"][0]["components_below"][0]
+    assert veg["class"] == "vegetation"
+    assert "condition" not in veg and "conditions" not in veg                       # no condition family
+
+
+def test_result_to_rows_flattens_with_condition():
+    from inference.pipeline import result_to_rows, CSV_COLUMNS
+    result = {"image": "x.jpg", "poles": [
+        {"box": [0, 0, 100, 200], "confidence": 0.9, "crop_path": "p.jpg",
+         "components_above": [{"class": "v_insulator", "confidence": 0.8,
+                              "box_full": [10, 20, 30, 40], "box_crop": [1, 2, 3, 4],
+                              "crop_path": "c.jpg",
+                              "condition": {"class": "v_insulator_broken", "confidence": 0.7},
+                              "conditions": []}],
+         "components_below": []}]}
+    rows = result_to_rows(result)
+    assert len(rows) == 1
+    r = rows[0]
+    assert set(r) == set(CSV_COLUMNS)
+    assert r["component_class"] == "v_insulator" and r["group"] == "above"
+    assert r["condition_class"] == "v_insulator_broken" and r["condition_confidence"] == 0.7
+    assert r["comp_x1"] == 10 and r["comp_y2"] == 40
+
+
+def test_result_to_rows_pole_with_no_components():
+    from inference.pipeline import result_to_rows
+    result = {"image": "x.jpg", "poles": [
+        {"box": [0, 0, 10, 10], "confidence": 0.5, "crop_path": "p.jpg",
+         "components_above": [], "components_below": []}]}
+    rows = result_to_rows(result)
+    assert len(rows) == 1 and rows[0]["component_class"] == "" and rows[0]["pole_confidence"] == 0.5
+
+
 def test_torchvision_detector_defaults_to_training_resize():
     # regression guard: serving FRCNN at torchvision's 800/1333 instead of the trained
     # 2000/3000 collapses small-object detection. The detector default must match training.

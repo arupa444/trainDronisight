@@ -8,16 +8,19 @@ component crop -> structured JSON. Usage:
 Each stage's backend is independently selectable: yolo | rfdetr | frcnn.
 """
 import argparse
+import csv
 import json
 from pathlib import Path
 
 import cv2
 
+from shared import config
 from inference.backends import YoloDetector, RFDetrDetector, TorchvisionDetector
 from inference.geometry import crop_with_pad, shift_detection
 from data_prep.preprocess import load_oriented_bgr, clahe_image
 
 BACKENDS = ["yolo", "rfdetr", "frcnn"]
+IMG_EXTS = {".jpg", ".jpeg", ".png"}
 
 
 def build_detector(backend, weights, conf, imgsz, class_names, resolution=672, frcnn_min_size=2000):
@@ -42,19 +45,30 @@ def _save_crop(crop, crop_dir, name):
     return str(path)
 
 
-def _classify_condition(comp_crop, condition_detector):
-    """Stage 4: run the 14-class condition detector on a single component crop."""
-    if condition_detector is None or comp_crop.size == 0:
-        return None
-    return [{"class": c.class_name, "confidence": c.confidence,
-             "box_comp": [int(v) for v in c.box]}
-            for c in condition_detector.predict(comp_crop)]
+def _classify_condition(comp_crop, condition_detector, component_class):
+    """Stage 4: run the condition detector on ONE component crop, then MAP — keep only the
+    condition classes valid for this component's family (config.COMPONENT_TO_CONDITIONS). A
+    v_insulator crop can't be a crossarm/wire condition. Returns (best, all_valid):
+      * best = {"class","confidence"} highest-confidence in-family condition, or None
+      * all_valid = every in-family condition detection (sorted), or None if no family / no detector.
+    Components with no condition family (vegetation, rust) -> (None, None)."""
+    allowed = config.COMPONENT_TO_CONDITIONS.get(component_class)
+    if condition_detector is None or allowed is None or comp_crop.size == 0:
+        return None, None
+    allowed = set(allowed)
+    dets = sorted((c for c in condition_detector.predict(comp_crop) if c.class_name in allowed),
+                  key=lambda c: c.confidence, reverse=True)
+    all_valid = [{"class": c.class_name, "confidence": c.confidence,
+                  "box_comp": [int(v) for v in c.box]} for c in dets]
+    best = {"class": dets[0].class_name, "confidence": dets[0].confidence} if dets else None
+    return best, all_valid
 
 
 def _detect_on_crop(image, pole_crop, offset, detector, crop_dir, prefix,
                     condition_detector=None):
     """Run `detector` on the pole crop, remap each detection to the full frame, save its crop,
-    and (if a condition detector is given) classify each component crop's condition."""
+    and (if a condition detector is given) classify each component crop's condition (mapped to
+    the component's family)."""
     ox, oy = offset
     out = []
     for ci, comp in enumerate(detector.predict(pole_crop)):
@@ -67,9 +81,10 @@ def _detect_on_crop(image, pole_crop, offset, detector, crop_dir, prefix,
             "box_full": [int(v) for v in full.box],
             "crop_path": _save_crop(comp_crop, crop_dir, f"{prefix}_comp{ci}.jpg"),
         }
-        conditions = _classify_condition(comp_crop, condition_detector)
-        if conditions is not None:
-            entry["conditions"] = conditions
+        best, all_valid = _classify_condition(comp_crop, condition_detector, comp.class_name)
+        if all_valid is not None:                  # condition stage ran for this component family
+            entry["condition"] = best              # the mapped, in-family top condition (or None)
+            entry["conditions"] = all_valid         # all in-family condition detections
         out.append(entry)
     return out
 
@@ -98,14 +113,66 @@ def run_pipeline(image, pole_detector, above_detector, below_detector,
     return result
 
 
+CSV_COLUMNS = ["image", "pole_index", "pole_confidence", "pole_x1", "pole_y1", "pole_x2", "pole_y2",
+               "group", "component_class", "component_confidence",
+               "comp_x1", "comp_y1", "comp_x2", "comp_y2",
+               "condition_class", "condition_confidence", "crop_path"]
+
+
+def result_to_rows(result):
+    """Flatten one pipeline result dict into CSV rows: ONE row per detected component (its mapped
+    condition inline), plus a component-less row for any pole with no components."""
+    rows = []
+    img = result["image"]
+    for pi, pole in enumerate(result["poles"]):
+        px = pole["box"]
+        base = {"image": img, "pole_index": pi, "pole_confidence": round(pole["confidence"], 4),
+                "pole_x1": px[0], "pole_y1": px[1], "pole_x2": px[2], "pole_y2": px[3]}
+        comps = ([("above", c) for c in pole.get("components_above", [])]
+                 + [("below", c) for c in pole.get("components_below", [])])
+        if not comps:
+            rows.append({**base, "group": "", "component_class": "", "component_confidence": "",
+                         "comp_x1": "", "comp_y1": "", "comp_x2": "", "comp_y2": "",
+                         "condition_class": "", "condition_confidence": "", "crop_path": pole.get("crop_path") or ""})
+            continue
+        for grp, c in comps:
+            b = c["box_full"]
+            cond = c.get("condition")
+            rows.append({**base, "group": grp,
+                         "component_class": c["class"], "component_confidence": round(c["confidence"], 4),
+                         "comp_x1": b[0], "comp_y1": b[1], "comp_x2": b[2], "comp_y2": b[3],
+                         "condition_class": (cond["class"] if cond else ""),
+                         "condition_confidence": (round(cond["confidence"], 4) if cond else ""),
+                         "crop_path": c.get("crop_path") or ""})
+    return rows
+
+
+def write_csv(rows, path):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
+        w.writeheader()
+        w.writerows(rows)
+
+
+def _image_paths(arg):
+    """--image may be a single file or a directory of images."""
+    p = Path(arg)
+    if p.is_dir():
+        return sorted(q for q in p.rglob("*") if q.suffix.lower() in IMG_EXTS and not q.name.startswith("._"))
+    return [p]
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--image", required=True)
+    ap.add_argument("--image", required=True, help="an image file OR a directory of images")
     ap.add_argument("--pole-weights", required=True)
     ap.add_argument("--comp-above-weights", required=True)
     ap.add_argument("--comp-below-weights", required=True)
     ap.add_argument("--crop-dir", default="runs/inference/crops")
     ap.add_argument("--out", default="runs/inference/result.json")
+    ap.add_argument("--out-csv", default="runs/inference/result.csv",
+                    help="flat CSV: one row per detected component with its mapped condition")
     ap.add_argument("--pole-pad", type=float, default=0.05)
     ap.add_argument("--pole-conf", type=float, default=0.12,   # recall-leaning (Stage-1: don't miss poles)
                     help="pole-stage confidence; low favors recall")
@@ -132,12 +199,7 @@ def main():
     ap.add_argument("--condition-conf", type=float, default=0.25)
     ap.add_argument("--condition-imgsz", type=int, default=1280)
     a = ap.parse_args()
-    # EXIF-orient + CLAHE once on the full frame: pole runs on it, and every pole crop
-    # inherits the CLAHE, so both component models also see their trained distribution.
-    image = load_oriented_bgr(a.image)
-    if not a.no_clahe:
-        image = clahe_image(image)
-    from shared import config
+    # build the detectors ONCE, then run over every image (file or directory).
     pole_det = build_detector(a.pole_backend, a.pole_weights, a.pole_conf, a.pole_imgsz,
                               config.POLE_CLASSES, a.rfdetr_resolution, a.frcnn_min_size)
     above_det = build_detector(a.comp_above_backend, a.comp_above_weights, a.comp_conf,
@@ -150,12 +212,28 @@ def main():
                                     a.condition_imgsz, config.COMPONENT_CLASSIFICATION_CLASSES,
                                     a.rfdetr_resolution, a.frcnn_min_size)
                      if a.condition_weights else None)
-    result = run_pipeline(image, pole_det, above_det, below_det,
-                          a.crop_dir, Path(a.image).name, pole_pad=a.pole_pad,
-                          condition_detector=condition_det)
+
+    paths = _image_paths(a.image)
+    results, rows = [], []
+    for p in paths:
+        # EXIF-orient + CLAHE ONCE on the full frame; pole runs on it and every crop inherits
+        # the CLAHE, so the component/condition models see their trained distribution.
+        image = load_oriented_bgr(str(p))
+        if not a.no_clahe:
+            image = clahe_image(image)
+        result = run_pipeline(image, pole_det, above_det, below_det,
+                              a.crop_dir, p.name, pole_pad=a.pole_pad,
+                              condition_detector=condition_det)
+        results.append(result)
+        rows.extend(result_to_rows(result))
+        print(f"[{p.name}] poles={len(result['poles'])} "
+              f"components={sum(len(x['components_above'])+len(x['components_below']) for x in result['poles'])}")
+
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(a.out).write_text(json.dumps(result, indent=2))
-    print(json.dumps(result, indent=2))
+    Path(a.out).write_text(json.dumps(results if len(results) != 1 else results[0], indent=2))
+    write_csv(rows, a.out_csv)
+    print(f"\nWrote {len(rows)} component rows for {len(paths)} image(s) -> {a.out_csv}")
+    print(f"Full structured JSON -> {a.out}")
 
 
 if __name__ == "__main__":

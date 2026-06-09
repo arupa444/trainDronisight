@@ -40,6 +40,22 @@ COMPONENT_CLASSIFICATION_CLASSES = [
     "v_insulator_chip_off", "top_crossarm_normal",
 ]
 
+# Component -> the condition classes that are VALID for it. At inference the condition model
+# runs on a CROP of one detected component, so a v_insulator crop can only carry v_insulator_*
+# conditions (never a crossarm/wire condition). The pipeline maps each component to its family
+# and DROPS condition detections outside it. Components with no condition family (vegetation,
+# rust) get no condition. Note: the detector class `crossarm_stright` maps to the `straight_crossarm_*`
+# condition names. These 6 families partition all 14 COMPONENT_CLASSIFICATION_CLASSES exactly.
+COMPONENT_TO_CONDITIONS = {
+    "v_insulator":      ["v_insulator_normal", "v_insulator_band", "v_insulator_broken", "v_insulator_chip_off"],
+    "h_insulator":      ["h_insulator_normal", "h_insulator_broken", "h_insulator_chip_off"],
+    "wire":             ["wire_normal", "cross_wire"],
+    "crossarm_stright": ["straight_crossarm_normal", "straight_crossarm_band"],
+    "top_crossarm":     ["top_crossarm_normal", "top_crossarm_band"],
+    "om_crossarm":      ["om_crossarm_normal"],
+    # vegetation, rust -> no condition family (presence/defect only)
+}
+
 # One place every consumer reads the per-subset class list from.
 SUBSET_CLASSES = {
     "pole": POLE_CLASSES,
