@@ -96,13 +96,14 @@ def build_subset(subset: str, balance: bool):
     crop_cfg = config.CROP_ALIGN.get(subset)
     is_crop = crop_cfg is not None
     # Balance modes (val/test always raw):
-    #   target (e.g. component=1500, cond_*=400): on TRAIN cap each class DOWN to the target and
-    #     augment under-target classes UP to it.
-    #   else (pole): legacy down-cap toward the rarest kept class (a no-op for a single class).
+    #   target (if set in BALANCE_TARGET): cap each class DOWN to it + augment up to it.
+    #   else multi-class: KEEP ALL data, oversample the rarer classes UP toward the max class
+    #     (no capping), bounded by config.MAX_OVERSAMPLE_FACTOR.
+    #   single-class (pole, comp_wire/vegetation/rust): no balancing needed.
     target = config.BALANCE_TARGET.get(subset)
     do_target = target is not None
-    do_balance = balance and config.BALANCE_CAP_ENABLED and not do_target
-    do_oversample = False
+    do_balance = False
+    do_oversample = (balance and not do_target and len(class_names) > 1)
     samples = collect_samples(config.SUBSET_SOURCE_DIRS.get(subset, config.SOURCE_DIRS))
 
     # parse + keep only images that contain >=1 class for this subset
@@ -232,10 +233,11 @@ def build_subset(subset: str, balance: bool):
                           coco_per_split, manifest_rows, it["source"], it["group"], prof, clip)
             written.append(it)
 
-        # oversample TRAIN with bbox-aware augmentation: below_1000 -> equalize to the max class
-        # count (target=None); component_classification -> bring under-target classes up to target.
+        # oversample TRAIN with bbox-aware augmentation: multi-class subsets -> lift the rarer
+        # classes toward the max class (target=None); MAX_OVERSAMPLE_FACTOR bounds total aug copies.
         if (do_oversample or do_target) and split_name == "train" and written:
-            for j, idx in enumerate(plan_oversample(written, class_names, seed=config.SEED, target=target)):
+            for j, idx in enumerate(plan_oversample(written, class_names, seed=config.SEED,
+                                                     target=target, max_factor=config.MAX_OVERSAMPLE_FACTOR)):
                 it = written[idx]
                 s, full_ann = parsed[it["image"]]
                 bgr_full = load_oriented_bgr(s.image)

@@ -10,10 +10,9 @@ def test_class_sets_are_canonical():
     assert len(config.SUBSETS) == 12      # pole + 5 component + 6 condition
     assert config.SUBSET_SOURCE_DIRS["comp_wire"] == config.SOURCE_DIRS            # mem captures
     assert config.SUBSET_SOURCE_DIRS["cond_wire"] == config.CONDITION_SOURCE_DIRS  # 6th-june
-    # only the imbalanced multi-class detectors carry a target; single-class ones don't
-    assert config.BALANCE_TARGET["comp_crossarm"] == 1000
-    assert config.BALANCE_TARGET["cond_v_insulator"] == 400
-    assert "comp_wire" not in config.BALANCE_TARGET and "comp_rust" not in config.BALANCE_TARGET
+    # balance = keep all data + oversample rare toward max (no capping targets)
+    assert config.BALANCE_TARGET == {}
+    assert config.MAX_OVERSAMPLE_FACTOR >= 1
     # om_crossarm now has a band condition class (was previously dropped)
     assert config.COND_OM_CROSSARM_CLASSES == ["om_crossarm_normal", "om_crossarm_band"]
 

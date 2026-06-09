@@ -120,14 +120,15 @@ SUBSET_SOURCE_DIRS = {
     **{s: CONDITION_SOURCE_DIRS for s in COND_SUBSETS},
 }
 
-# Per-subset TRAIN class-balance target (instances/class): cap classes above it, augment below it;
-# val/test stay raw. Only multi-class detectors with internal imbalance need it: comp_crossarm
-# (straight ~2.9k vs om ~440) and each condition specialist. Single-class detectors (wire,
-# vegetation, rust) have no internal imbalance -> no target (rust stays data-limited regardless).
-BALANCE_TARGET = {
-    "comp_crossarm": 1000,
-    **{s: 400 for s in COND_SUBSETS},
-}
+# Balance policy (TRAIN only; val/test raw). Earlier fixed targets (400/1000) CAPPED the majority
+# class and discarded most real data (e.g. straight_crossarm 1212+1158 -> 400+400 lost 1570 for no
+# benefit). Instead: KEEP ALL real data and OVERSAMPLE the rarer classes UP toward the MAX class
+# (data_prep.oversample, target=None) for every MULTI-class subset. MAX_OVERSAMPLE_FACTOR bounds the
+# TOTAL augmented copies at factor x (#train images) -- a runaway guard, not a per-class cap. (A
+# very rare class like wire_normal ~62 still gets lifted toward its family max; the real cure for
+# those is more labels, not more duplicates.) Single-class detectors (wire/vegetation/rust/pole): none.
+BALANCE_TARGET = {}                 # no capping of any class
+MAX_OVERSAMPLE_FACTOR = 6
 
 # Collapse every byte-identical copy of one physical image into a SINGLE entry holding
 # the UNION of all copies' boxes, BEFORE splitting. This is keyed on image CONTENT hash,
