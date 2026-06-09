@@ -29,12 +29,13 @@ _CANONICAL = {
     "top_crossarm_band": "top_crossarm_band",
     "h_insulator_chip_off": "h_insulator_chip_off",
     "om_crossarm_normal": "om_crossarm_normal",
+    "om_crossarm_band": "om_crossarm_band",            # 150 instances in the data -> KEPT (om condition)
     "v_insulator_chip_off": "v_insulator_chip_off",
     "top_crossarm_normal": "top_crossarm_normal",
     "top_corssarm_normal": "top_crossarm_normal",      # misspelling -> merge
     "v_insulator_puncture": "v_insulator_chip_off",    # merge punctures into chip_off
     "h_insulator_puncture": "h_insulator_chip_off",
-    # 'w' (stray) and 'om_crossarm_band' (excluded) intentionally absent -> normalize to None
+    # 'w' (stray, 8x) intentionally absent -> normalize to None
 }
 
 

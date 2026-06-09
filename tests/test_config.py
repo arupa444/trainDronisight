@@ -2,44 +2,44 @@ from shared import config
 
 def test_class_sets_are_canonical():
     assert config.POLE_CLASSES == ["pole"]
-    assert config.COMPONENT_ABOVE_CLASSES == ["wire", "h_insulator", "v_insulator", "crossarm_stright"]
-    assert config.COMPONENT_BELOW_CLASSES == ["vegetation", "top_crossarm", "om_crossarm", "rust"]
-    assert len(config.COMPONENT_CLASSIFICATION_CLASSES) == 14
-    assert set(config.BASE_SUBSETS) == {"pole", "component_above_1000",
-                                        "component_below_1000", "component_classification"}
-    # component_classification draws from the 6th-june folders, not the mem captures
-    assert config.SUBSET_SOURCE_DIRS["component_classification"] == config.CONDITION_SOURCE_DIRS
-    assert config.SUBSET_SOURCE_DIRS["pole"] == config.SOURCE_DIRS
-    assert config.BALANCE_TARGET["component_classification"] == 400
+    # unified component detector: 8 types incl all 3 crossarm kinds together
+    assert config.COMPONENT_CLASSES == ["wire", "h_insulator", "v_insulator", "crossarm_stright",
+                                        "top_crossarm", "om_crossarm", "vegetation", "rust"]
+    assert set(config.SUBSETS) == {"pole", "component", "cond_v_insulator", "cond_h_insulator",
+                                   "cond_straight_crossarm", "cond_top_crossarm",
+                                   "cond_om_crossarm", "cond_wire"}
+    assert config.SUBSET_SOURCE_DIRS["component"] == config.SOURCE_DIRS         # mem captures
+    assert config.SUBSET_SOURCE_DIRS["cond_wire"] == config.CONDITION_SOURCE_DIRS  # 6th-june
+    assert config.BALANCE_TARGET["component"] == 1500
+    assert config.BALANCE_TARGET["cond_v_insulator"] == 400
+    # om_crossarm now has a band condition class (was previously dropped)
+    assert config.COND_OM_CROSSARM_CLASSES == ["om_crossarm_normal", "om_crossarm_band"]
 
 
-def test_component_to_conditions_partitions_all_14_classes():
-    # every mapped condition is a real condition class; the 6 families partition all 14 exactly
-    flat = [c for v in config.COMPONENT_TO_CONDITIONS.values() for c in v]
-    assert set(flat) == set(config.COMPONENT_CLASSIFICATION_CLASSES)   # exact coverage
-    assert len(flat) == len(config.COMPONENT_CLASSIFICATION_CLASSES)   # no overlaps (14, once each)
-    # keys are real component classes (above ∪ below); vegetation/rust have NO condition family
-    comp_classes = set(config.COMPONENT_ABOVE_CLASSES) | set(config.COMPONENT_BELOW_CLASSES)
-    assert set(config.COMPONENT_TO_CONDITIONS) <= comp_classes
-    assert "vegetation" not in config.COMPONENT_TO_CONDITIONS
-    assert "rust" not in config.COMPONENT_TO_CONDITIONS
-    # the naming bridge: the detector's crossarm_stright maps to straight_crossarm_* conditions
-    assert config.COMPONENT_TO_CONDITIONS["crossarm_stright"] == \
-        ["straight_crossarm_normal", "straight_crossarm_band"]
+def test_condition_specialists_route_and_partition():
+    # every detector class with conditions routes to a real cond_* subset
+    for comp, model in config.COMPONENT_TO_CONDITION_MODEL.items():
+        assert model in config.COND_SUBSETS
+        # the derived family-filter classes equal that model's class list
+        assert config.COMPONENT_TO_CONDITIONS[comp] == config.SUBSET_CLASSES[model]
+    # vegetation/rust have NO condition family
+    assert "vegetation" not in config.COMPONENT_TO_CONDITION_MODEL
+    assert "rust" not in config.COMPONENT_TO_CONDITION_MODEL
+    # naming bridge: detector crossarm_stright -> straight_crossarm condition family
+    assert config.COMPONENT_TO_CONDITION_MODEL["crossarm_stright"] == "cond_straight_crossarm"
+    # the 6 families together cover every condition class exactly once (no overlap)
+    flat = [c for s in config.COND_SUBSETS for c in config.SUBSET_CLASSES[s]]
+    assert len(flat) == len(set(flat))
 
 
-def test_crop_subsets_share_base_policy():
-    # each <base>_crop subset mirrors its base's class list and resolves back via base_subset()
-    assert config.CROP_SUBSETS == ["component_above_1000_crop", "component_below_1000_crop",
-                                   "component_classification_crop"]
-    for cs in config.CROP_SUBSETS:
-        base = config.base_subset(cs)
-        assert base + "_crop" == cs
-        assert config.SUBSET_CLASSES[cs] == config.SUBSET_CLASSES[base]
-    assert config.base_subset("pole") == "pole"          # non-crop passes through
-    # crop modes: above/below crop to the pole anchor, condition crops to the component itself
-    assert config.CROP_ALIGN["component_above_1000"][0] == "anchor"
-    assert config.CROP_ALIGN["component_classification"][0] == "self"
+def test_crop_alignment_modes():
+    # `component` crops to the pole (anchor); each cond_* crops to the component itself (self)
+    assert config.CROP_ALIGN["component"][0] == "anchor"
+    for s in config.COND_SUBSETS:
+        assert config.CROP_ALIGN[s][0] == "self"
+        assert config.CROP_ALIGN[s][2] == config.CONDITION_CROP_PAD
+    assert "pole" not in config.CROP_ALIGN                  # pole trains on the full frame
+    assert config.CROP_ALIGN["component"][2] == config.POLE_CROP_PAD
 
 def test_split_ratios_sum_to_one():
     assert abs(sum(config.SPLIT_RATIOS.values()) - 1.0) < 1e-9

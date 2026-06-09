@@ -93,11 +93,12 @@ def test_condition_base_and_normal():
     assert condition_base_and_normal("om_crossarm_normal") == ("om_crossarm", True)
 
 
-def test_base_and_normal_covers_all_14_condition_classes():
+def test_base_and_normal_covers_all_condition_classes():
     from shared import config
-    for name in config.COMPONENT_CLASSIFICATION_CLASSES:
-        base, is_norm = condition_base_and_normal(name)
-        assert base and isinstance(is_norm, bool)
+    for s in config.COND_SUBSETS:
+        for name in config.SUBSET_CLASSES[s]:
+            base, is_norm = condition_base_and_normal(name)
+            assert base and isinstance(is_norm, bool)
 
 
 def test_defect_beats_normal_on_same_object():

@@ -23,87 +23,73 @@ DEDUP_PAIRS = [("mem7", "mem 7.1 5th june")]
 YOLO_DB = SSD_ROOT / "yolo_train_db"
 COCO_DB = SSD_ROOT / "RF_DETR_Faster_RCNN_train_db"
 
-# Class policy -> three detectors:
-#   pole                  : the pole on the full frame
-#   component_above_1000  : the 4 high-frequency component classes (>1000 instances)
-#   component_below_1000  : the 4 rare component classes (<1000) -- now trained (oversampled),
-#                           previously ignored. Still never deleted from source.
+# Class policy -> pole + ONE unified component detector + per-family condition specialists:
+#   pole       : the pole on the full frame.
+#   component  : ALL component TYPES in ONE detector, run on the pole crop. Unified (not split
+#                above/below by frequency) so the three crossarm types compete in one softmax and
+#                stop being mis-typed (om_crossarm <-> straight crossarm), and so the model learns
+#                negatives across all types.
+#   cond_*     : per-component-family CONDITION specialists, each run on a crop of one detected
+#                component of that family (the old single 14-class condition model is split so each
+#                specialist masters its family's subtle defects; insulators were the weak spot).
 POLE_CLASSES = ["pole"]
-COMPONENT_ABOVE_CLASSES = ["wire", "h_insulator", "v_insulator", "crossarm_stright"]
-COMPONENT_BELOW_CLASSES = ["vegetation", "top_crossarm", "om_crossarm", "rust"]
-# Condition of a detected component (run on the above/below component crop). 14 classes;
-# train is balanced to BALANCE_TARGET per class (cap the big ones, augment the small ones).
-COMPONENT_CLASSIFICATION_CLASSES = [
-    "straight_crossarm_normal", "straight_crossarm_band", "v_insulator_normal", "wire_normal",
-    "h_insulator_normal", "cross_wire", "h_insulator_broken", "v_insulator_band",
-    "v_insulator_broken", "top_crossarm_band", "h_insulator_chip_off", "om_crossarm_normal",
-    "v_insulator_chip_off", "top_crossarm_normal",
-]
+COMPONENT_CLASSES = ["wire", "h_insulator", "v_insulator", "crossarm_stright",
+                     "top_crossarm", "om_crossarm", "vegetation", "rust"]
 
-# Component -> the condition classes that are VALID for it. At inference the condition model
-# runs on a CROP of one detected component, so a v_insulator crop can only carry v_insulator_*
-# conditions (never a crossarm/wire condition). The pipeline maps each component to its family
-# and DROPS condition detections outside it. Components with no condition family (vegetation,
-# rust) get no condition. Note: the detector class `crossarm_stright` maps to the `straight_crossarm_*`
-# condition names. These 6 families partition all 14 COMPONENT_CLASSIFICATION_CLASSES exactly.
-COMPONENT_TO_CONDITIONS = {
-    "v_insulator":      ["v_insulator_normal", "v_insulator_band", "v_insulator_broken", "v_insulator_chip_off"],
-    "h_insulator":      ["h_insulator_normal", "h_insulator_broken", "h_insulator_chip_off"],
-    "wire":             ["wire_normal", "cross_wire"],
-    "crossarm_stright": ["straight_crossarm_normal", "straight_crossarm_band"],
-    "top_crossarm":     ["top_crossarm_normal", "top_crossarm_band"],
-    "om_crossarm":      ["om_crossarm_normal"],
+# Condition specialists, one per base component family (om_crossarm_band added per the data).
+COND_V_INSULATOR_CLASSES       = ["v_insulator_normal", "v_insulator_band", "v_insulator_broken", "v_insulator_chip_off"]
+COND_H_INSULATOR_CLASSES       = ["h_insulator_normal", "h_insulator_broken", "h_insulator_chip_off"]
+COND_STRAIGHT_CROSSARM_CLASSES = ["straight_crossarm_normal", "straight_crossarm_band"]
+COND_TOP_CROSSARM_CLASSES      = ["top_crossarm_normal", "top_crossarm_band"]
+COND_OM_CROSSARM_CLASSES       = ["om_crossarm_normal", "om_crossarm_band"]
+COND_WIRE_CLASSES              = ["wire_normal", "cross_wire"]
+
+# Which condition specialist each detected component routes to at inference (None = no condition).
+# `crossarm_stright` (detector name) -> the straight_crossarm condition family.
+COMPONENT_TO_CONDITION_MODEL = {
+    "v_insulator":      "cond_v_insulator",
+    "h_insulator":      "cond_h_insulator",
+    "crossarm_stright": "cond_straight_crossarm",
+    "top_crossarm":     "cond_top_crossarm",
+    "om_crossarm":      "cond_om_crossarm",
+    "wire":             "cond_wire",
     # vegetation, rust -> no condition family (presence/defect only)
 }
 
 # One place every consumer reads the per-subset class list from.
 SUBSET_CLASSES = {
     "pole": POLE_CLASSES,
-    "component_above_1000": COMPONENT_ABOVE_CLASSES,
-    "component_below_1000": COMPONENT_BELOW_CLASSES,
-    "component_classification": COMPONENT_CLASSIFICATION_CLASSES,
+    "component": COMPONENT_CLASSES,
+    "cond_v_insulator": COND_V_INSULATOR_CLASSES,
+    "cond_h_insulator": COND_H_INSULATOR_CLASSES,
+    "cond_straight_crossarm": COND_STRAIGHT_CROSSARM_CLASSES,
+    "cond_top_crossarm": COND_TOP_CROSSARM_CLASSES,
+    "cond_om_crossarm": COND_OM_CROSSARM_CLASSES,
+    "cond_wire": COND_WIRE_CLASSES,
 }
-BASE_SUBSETS = list(SUBSET_CLASSES)
-
-# Crop-aligned variants: train the component/condition detectors on CROPS at the same spatial
-# scale they are run on at inference (above/below run on the pole crop; condition runs on the
-# component crop), instead of on full ~4000x3000 frames. This closes the train/serve scale gap
-# for thin wires and small insulators. Each <base>_crop subset shares its base's class list and
-# balance/source/merge policy; keep BOTH and pick the val-mAP winner (full-frame vs crop ablation).
-# CROP_ALIGN[base] = (mode, anchor_classes, pad_frac, min_visible_frac):
-#   * "anchor": crop to each anchor box (the pole) + pad; keep in-subset boxes >= min_visible in the crop.
-#   * "self":   crop to each in-subset box + pad (the component itself, with a little context).
-# Padding around a COMPONENT when cropping it for the condition (classification) model. This is
-# the SINGLE source of truth used BOTH when building component_classification_crop ("self" mode
-# below) AND when the inference pipeline crops a detected component to feed the condition model,
-# so train scale/context == serve scale/context. Subtle insulator defects (band/chip_off) need the
-# surrounding context, and padding also tolerates imperfect detector boxes.
-CONDITION_CROP_PAD = 0.25
-
-# Padding around the POLE box when cropping for the above/below detectors. SINGLE source of truth:
-# used both to BUILD the *_crop datasets (anchor mode) AND as the inference --pole-pad default, so
-# train scale == serve scale. A narrow pole box clips horizontally-spanning wires/crossarm at low
-# pad; raise this (e.g. 0.15) to capture them, but too much pad shrinks objects back toward the
-# full-frame scale. Ablate 0.05 vs 0.15 on val wire/crossarm AP. (Rebuild + retrain after changing.)
-POLE_CROP_PAD = 0.05
-
-CROP_ALIGN = {
-    "component_above_1000": ("anchor", tuple(POLE_CLASSES), POLE_CROP_PAD, 0.30),
-    "component_below_1000": ("anchor", tuple(POLE_CLASSES), POLE_CROP_PAD, 0.30),
-    "component_classification": ("self", None, CONDITION_CROP_PAD, 0.50),
-}
-CROP_SUBSETS = [b + "_crop" for b in CROP_ALIGN]
-for _b in CROP_ALIGN:
-    SUBSET_CLASSES[_b + "_crop"] = SUBSET_CLASSES[_b]
 SUBSETS = list(SUBSET_CLASSES)
+COND_SUBSETS = ["cond_v_insulator", "cond_h_insulator", "cond_straight_crossarm",
+                "cond_top_crossarm", "cond_om_crossarm", "cond_wire"]
 
+# component -> the condition classes valid for it (derived from the per-family models); used by the
+# pipeline to keep only in-family condition detections. vegetation/rust absent -> no condition.
+COMPONENT_TO_CONDITIONS = {c: SUBSET_CLASSES[m] for c, m in COMPONENT_TO_CONDITION_MODEL.items()}
 
-def base_subset(subset: str) -> str:
-    """The full-frame base a (possibly crop-aligned) subset derives its policy from."""
-    return subset[:-len("_crop")] if subset.endswith("_crop") else subset
+# Crop padding (single source of truth so BUILD scale == inference scale):
+POLE_CROP_PAD = 0.05        # `component` detector: crop to the pole box + this pad (== inference --pole-pad)
+CONDITION_CROP_PAD = 0.25   # `cond_*` specialists: crop to the component box + this pad (== inference --condition-pad)
 
-# Per-subset raw source folders: the mem captures feed pole/components; the '6th june'
-# close-up condition captures feed component_classification.
+# How each subset is crop-aligned at BUILD time. A subset is crop-trained IFF it appears here.
+#   "anchor": crop to each anchor (pole) box + pad; keep in-subset boxes >= min_visible.
+#   "self":   crop to each in-subset box + pad (the component itself).
+# `pole` is absent -> trained on the full frame.
+CROP_ALIGN = {
+    "component": ("anchor", tuple(POLE_CLASSES), POLE_CROP_PAD, 0.30),
+    **{s: ("self", None, CONDITION_CROP_PAD, 0.50) for s in COND_SUBSETS},
+}
+
+# Per-subset raw source folders: the mem captures feed pole + component; the '6th june'
+# close-up condition captures feed every cond_* specialist.
 _CONDITION_FOLDER_NAMES = [
     "6thMem1AllTeam1",
     "6thMem2AllTeam1/6thMem2AllTeam1",   # images nested one level below their XMLs
@@ -113,14 +99,17 @@ _CONDITION_FOLDER_NAMES = [
 CONDITION_SOURCE_DIRS = [SSD_ROOT / "6th june " / n for n in _CONDITION_FOLDER_NAMES]
 SUBSET_SOURCE_DIRS = {
     "pole": SOURCE_DIRS,
-    "component_above_1000": SOURCE_DIRS,
-    "component_below_1000": SOURCE_DIRS,
-    "component_classification": CONDITION_SOURCE_DIRS,
+    "component": SOURCE_DIRS,
+    **{s: CONDITION_SOURCE_DIRS for s in COND_SUBSETS},
 }
 
-# Per-subset TRAIN class-balance target (instances/class): cap classes above it, augment below.
-# Subsets not listed use cap-to-rarest (pole/above) or oversample-to-max (below).
-BALANCE_TARGET = {"component_classification": 400}
+# Per-subset TRAIN class-balance target (instances/class): cap classes above it, augment below it;
+# val/test stay raw. `component` caps the frequent classes (wire ~3.4k) down and augments the rare
+# ones (rust ~225) up; each condition specialist balances its 2-4 classes to 400.
+BALANCE_TARGET = {
+    "component": 1500,
+    **{s: 400 for s in COND_SUBSETS},
+}
 
 # Collapse every byte-identical copy of one physical image into a SINGLE entry holding
 # the UNION of all copies' boxes, BEFORE splitting. This is keyed on image CONTENT hash,
@@ -133,12 +122,11 @@ BALANCE_TARGET = {"component_classification": 400}
 # subset; it is a no-op on truly disjoint captures (just a hashing pass).
 MERGE_CROSS_FOLDER = {s: True for s in SUBSETS}
 
-# For the per-object CONDITION subset, after merging the union of members' boxes, resolve
-# the case where members gave the SAME physical object DIFFERENT condition labels: defect
-# beats normal, and a defect-vs-defect disagreement is dropped as ambiguous. Only meaningful
-# for component_classification (for the above/below detectors, overlapping distinct classes
-# like a wire crossing a crossarm are legitimate, so it is left OFF there).
-RESOLVE_CONDITION_CONFLICTS = {"component_classification": True}
+# For the CONDITION specialists, after merging the union of members' boxes, resolve the case where
+# members gave the SAME physical object DIFFERENT condition labels: defect beats normal, and a
+# defect-vs-defect disagreement is dropped as ambiguous. ON for every cond_* (for the `component`
+# detector, overlapping distinct types like a wire crossing a crossarm are legitimate -> OFF).
+RESOLVE_CONDITION_CONFLICTS = {s: True for s in COND_SUBSETS}
 
 # Split
 SPLIT_RATIOS = {"train": 0.80, "val": 0.15, "test": 0.05}

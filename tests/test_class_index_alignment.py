@@ -26,7 +26,7 @@ def test_frcnn_is_coco_plus_one():
     # equivalently COCO category_id + 1. Confirm the inverse round-trips.
     from inference.backends import parse_torchvision_output
     import torch
-    classes = config.COMPONENT_ABOVE_CLASSES
+    classes = config.COMPONENT_CLASSES
     out = {"boxes": torch.tensor([[0.0, 0, 5, 5]]),
            "scores": torch.tensor([0.9]),
            "labels": torch.tensor([2])}              # model label 2 -> class index 1

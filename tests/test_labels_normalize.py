@@ -27,9 +27,9 @@ def test_condition_classes_kept_and_merged():
     assert normalize_class_name("h_insulator_puncture") == "h_insulator_chip_off"
 
 def test_dropped_condition_labels_return_none():
-    # 'w' (stray) and om_crossarm_band (excluded from the 14) -> dropped
-    assert normalize_class_name("w") is None
-    assert normalize_class_name("om_crossarm_band") is None
+    assert normalize_class_name("w") is None          # stray (8x) -> dropped
+    # om_crossarm_band IS now kept (150 instances -> the om condition family)
+    assert normalize_class_name("om_crossarm_band") == "om_crossarm_band"
 
 def test_unknown_returns_none():
     assert normalize_class_name("banana") is None

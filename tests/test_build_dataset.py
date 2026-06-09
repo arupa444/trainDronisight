@@ -6,8 +6,8 @@ def test_output_key_namespaces_by_source():
 def test_sample_class_list_for_each_subset():
     from shared import config
     assert sample_class_list("pole") == config.POLE_CLASSES
-    assert sample_class_list("component_above_1000") == config.COMPONENT_ABOVE_CLASSES
-    assert sample_class_list("component_below_1000") == config.COMPONENT_BELOW_CLASSES
+    assert sample_class_list("component") == config.COMPONENT_CLASSES
+    assert sample_class_list("cond_v_insulator") == config.COND_V_INSULATOR_CLASSES
 
 def test_version_hash_is_stable_and_order_independent():
     a = dataset_version_hash(["mem2/a.JPG", "mem3/b.JPG"])

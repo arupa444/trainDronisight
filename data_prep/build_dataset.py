@@ -91,23 +91,19 @@ def _write_sample(subset, split_name, key, bgr, clahe_img, ann, class_names,
 
 def build_subset(subset: str, balance: bool):
     class_names = sample_class_list(subset)
-    # A "<base>_crop" subset shares its base's classes/source/balance/merge policy but writes
-    # CROP-aligned images (pole crop for above/below, component crop for condition) so train
-    # scale matches inference. All policy lookups below key off `base`.
-    base = config.base_subset(subset)
-    is_crop = subset != base
-    crop_cfg = config.CROP_ALIGN.get(base) if is_crop else None
-    # Balance modes:
-    #   target (e.g. classification=400): split raw, then on TRAIN cap each class DOWN to the
-    #     target and augment under-target classes UP to it; val/test stay raw.
-    #   below_1000: keep all, oversample TRAIN up to the max class count.
-    #   else (pole/above): legacy down-cap toward the rarest kept class.
-    target = config.BALANCE_TARGET.get(base)
+    # A subset is CROP-aligned iff it appears in config.CROP_ALIGN (`component` = pole crop /
+    # anchor mode; each `cond_*` = component crop / self mode). `pole` is absent -> full frame.
+    crop_cfg = config.CROP_ALIGN.get(subset)
+    is_crop = crop_cfg is not None
+    # Balance modes (val/test always raw):
+    #   target (e.g. component=1500, cond_*=400): on TRAIN cap each class DOWN to the target and
+    #     augment under-target classes UP to it.
+    #   else (pole): legacy down-cap toward the rarest kept class (a no-op for a single class).
+    target = config.BALANCE_TARGET.get(subset)
     do_target = target is not None
-    do_balance = (balance and config.BALANCE_CAP_ENABLED
-                  and not do_target and base != "component_below_1000")
-    do_oversample = base == "component_below_1000"
-    samples = collect_samples(config.SUBSET_SOURCE_DIRS.get(base, config.SOURCE_DIRS))
+    do_balance = balance and config.BALANCE_CAP_ENABLED and not do_target
+    do_oversample = False
+    samples = collect_samples(config.SUBSET_SOURCE_DIRS.get(subset, config.SOURCE_DIRS))
 
     # parse + keep only images that contain >=1 class for this subset
     parsed = {}
@@ -130,14 +126,14 @@ def build_subset(subset: str, balance: bool):
     # and for the mem7/mem7.1 byte-identical overlap; a pure hashing no-op on disjoint
     # captures. Runs BEFORE grouping/splitting so a photo can never leak across splits.
     merge_stats = None
-    if config.MERGE_CROSS_FOLDER.get(base, True):
+    if config.MERGE_CROSS_FOLDER.get(subset, True):
         parsed, merge_stats = merge_by_image_identity(parsed)
 
     # Condition-conflict resolution (component_classification): when members gave the SAME
     # object different condition labels, defect beats normal and defect-vs-defect is dropped
     # as ambiguous. Drop any image left with no in-subset boxes afterwards.
     cond_conflict_stats = None
-    if config.RESOLVE_CONDITION_CONFLICTS.get(base):
+    if config.RESOLVE_CONDITION_CONFLICTS.get(subset):
         n_over = n_drop = 0
         empties = []
         for img, (s, ann) in parsed.items():
@@ -300,7 +296,7 @@ def build_subset(subset: str, balance: bool):
             "skipped_dim_mismatch": skipped_dim, "skipped_bad_xml": skipped_bad_xml,
             "cross_folder_merge": merge_stats,
             "condition_conflict_resolution": cond_conflict_stats,
-            "crop_aligned": is_crop, "base_subset": base,
+            "crop_aligned": is_crop,
             "crop_mode": (crop_cfg[0] if crop_cfg else None),
             "crop_source_images": n_crop_src if is_crop else None,
             "class_names": class_names}
@@ -331,17 +327,15 @@ def build_subset(subset: str, balance: bool):
 
 def main():
     ap = argparse.ArgumentParser()
-    # 'all' = the 4 full-frame base subsets; 'all_crop' = the crop-aligned variants;
-    # 'all_both' = everything. Individual subset names (incl. <base>_crop) also work.
-    ap.add_argument("--subset", choices=config.SUBSETS + ["all", "all_crop", "all_both"], required=True)
+    # 'all' = every subset (pole + component + 6 cond_*); 'all_cond' = just the 6 condition
+    # specialists. Individual subset names also work.
+    ap.add_argument("--subset", choices=config.SUBSETS + ["all", "all_cond"], required=True)
     ap.add_argument("--no-balance", action="store_true")
     args = ap.parse_args()
     if args.subset == "all":
-        subsets = list(config.BASE_SUBSETS)
-    elif args.subset == "all_crop":
-        subsets = list(config.CROP_SUBSETS)
-    elif args.subset == "all_both":
-        subsets = list(config.BASE_SUBSETS) + list(config.CROP_SUBSETS)
+        subsets = list(config.SUBSETS)
+    elif args.subset == "all_cond":
+        subsets = list(config.COND_SUBSETS)
     else:
         subsets = [args.subset]
     for sub in subsets:
