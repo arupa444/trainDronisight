@@ -173,6 +173,8 @@ def main():
     ap.add_argument("--out", default="runs/inference/result.json")
     ap.add_argument("--out-csv", default="runs/inference/result.csv",
                     help="flat CSV: one row per detected component with its mapped condition")
+    ap.add_argument("--viz-dir", default=None,
+                    help="if set, write 4 annotated views per image: <viz>/{pole,components,conditions,all}/")
     ap.add_argument("--pole-pad", type=float, default=0.05)
     ap.add_argument("--pole-conf", type=float, default=0.12,   # recall-leaning (Stage-1: don't miss poles)
                     help="pole-stage confidence; low favors recall")
@@ -216,16 +218,19 @@ def main():
     paths = _image_paths(a.image)
     results, rows = [], []
     for p in paths:
-        # EXIF-orient + CLAHE ONCE on the full frame; pole runs on it and every crop inherits
-        # the CLAHE, so the component/condition models see their trained distribution.
-        image = load_oriented_bgr(str(p))
-        if not a.no_clahe:
-            image = clahe_image(image)
+        # EXIF-orient ONCE; CLAHE is applied for inference (pole runs on it and every crop
+        # inherits the CLAHE), but we draw the viz on the un-CLAHE'd `oriented` frame (geometry
+        # is identical, colors look natural).
+        oriented = load_oriented_bgr(str(p))
+        image = clahe_image(oriented) if not a.no_clahe else oriented
         result = run_pipeline(image, pole_det, above_det, below_det,
                               a.crop_dir, p.name, pole_pad=a.pole_pad,
                               condition_detector=condition_det)
         results.append(result)
         rows.extend(result_to_rows(result))
+        if a.viz_dir:
+            from inference.visualize import save_layers
+            save_layers(oriented, result, a.viz_dir, Path(p.name).stem)
         print(f"[{p.name}] poles={len(result['poles'])} "
               f"components={sum(len(x['components_above'])+len(x['components_below']) for x in result['poles'])}")
 

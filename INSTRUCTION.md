@@ -269,6 +269,8 @@ python -m inference.pipeline \
 ```
 - **Condition mapping:** the condition model runs on each component crop, but its output is **filtered to that component's family** (`config.COMPONENT_TO_CONDITIONS`) — a `v_insulator` crop can only get a `v_insulator_*` condition, never a crossarm/wire one; `vegetation`/`rust` have no condition family (left blank). The top in-family condition is `condition`; all in-family ones are `conditions`.
 - **`result.csv` columns:** `image, pole_index, pole_confidence, pole_x1..y2, group(above/below), component_class, component_confidence, comp_x1..y2, condition_class, condition_confidence, crop_path`.
+- **Annotated views:** add `--viz-dir runs/inference/viz` to also write 4 boxed images per frame:
+  `viz/pole/` (pole only), `viz/components/` (above+below boxes), `viz/conditions/` (per-component condition boxes), `viz/all/` (everything overlaid). Drawn on the EXIF-oriented frame; condition boxes are remapped from the component crop to the full frame.
 - **Preprocessing matches training:** EXIF-orient + CLAHE applied **once** on the full frame; every
   crop inherits it. Pass `--no-clahe` only for `orig`-trained weights.
 - **Stage 4 is optional:** omit `--condition-weights` to stop at component detection.
