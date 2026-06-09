@@ -33,8 +33,21 @@ COCO_DB = SSD_ROOT / "RF_DETR_Faster_RCNN_train_db"
 #                component of that family (the old single 14-class condition model is split so each
 #                specialist masters its family's subtle defects; insulators were the weak spot).
 POLE_CLASSES = ["pole"]
-COMPONENT_CLASSES = ["wire", "h_insulator", "v_insulator", "crossarm_stright",
-                     "top_crossarm", "om_crossarm", "vegetation", "rust"]
+# Stage-2 component detectors are segregated by visual NATURE/SCALE (each run on the pole crop):
+#   comp_wire       : thin lines (its own thin-object scale regime)
+#   comp_insulator  : h_insulator + v_insulator (small mounted; discriminate orientation)
+#   comp_crossarm   : crossarm_stright + top_crossarm + om_crossarm (elongated bars; one softmax so
+#                     they stop being mis-typed -- the om_crossarm<->straight bug)
+#   comp_vegetation : large diffuse foliage
+#   comp_rust       : corrosion texture (tiny; data-limited)
+COMP_WIRE_CLASSES       = ["wire"]
+COMP_INSULATOR_CLASSES  = ["h_insulator", "v_insulator"]
+COMP_CROSSARM_CLASSES   = ["crossarm_stright", "top_crossarm", "om_crossarm"]
+COMP_VEGETATION_CLASSES = ["vegetation"]
+COMP_RUST_CLASSES       = ["rust"]
+COMP_SUBSETS = ["comp_wire", "comp_insulator", "comp_crossarm", "comp_vegetation", "comp_rust"]
+COMPONENT_CLASSES = (COMP_WIRE_CLASSES + COMP_INSULATOR_CLASSES + COMP_CROSSARM_CLASSES
+                     + COMP_VEGETATION_CLASSES + COMP_RUST_CLASSES)   # the 8 types (union, for reference)
 
 # Condition specialists, one per base component family (om_crossarm_band added per the data).
 COND_V_INSULATOR_CLASSES       = ["v_insulator_normal", "v_insulator_band", "v_insulator_broken", "v_insulator_chip_off"]
@@ -57,9 +70,15 @@ COMPONENT_TO_CONDITION_MODEL = {
 }
 
 # One place every consumer reads the per-subset class list from.
+COND_SUBSETS = ["cond_v_insulator", "cond_h_insulator", "cond_straight_crossarm",
+                "cond_top_crossarm", "cond_om_crossarm", "cond_wire"]
 SUBSET_CLASSES = {
     "pole": POLE_CLASSES,
-    "component": COMPONENT_CLASSES,
+    "comp_wire": COMP_WIRE_CLASSES,
+    "comp_insulator": COMP_INSULATOR_CLASSES,
+    "comp_crossarm": COMP_CROSSARM_CLASSES,
+    "comp_vegetation": COMP_VEGETATION_CLASSES,
+    "comp_rust": COMP_RUST_CLASSES,
     "cond_v_insulator": COND_V_INSULATOR_CLASSES,
     "cond_h_insulator": COND_H_INSULATOR_CLASSES,
     "cond_straight_crossarm": COND_STRAIGHT_CROSSARM_CLASSES,
@@ -68,8 +87,6 @@ SUBSET_CLASSES = {
     "cond_wire": COND_WIRE_CLASSES,
 }
 SUBSETS = list(SUBSET_CLASSES)
-COND_SUBSETS = ["cond_v_insulator", "cond_h_insulator", "cond_straight_crossarm",
-                "cond_top_crossarm", "cond_om_crossarm", "cond_wire"]
 
 # component -> the condition classes valid for it (derived from the per-family models); used by the
 # pipeline to keep only in-family condition detections. vegetation/rust absent -> no condition.
@@ -84,7 +101,7 @@ CONDITION_CROP_PAD = 0.25   # `cond_*` specialists: crop to the component box + 
 #   "self":   crop to each in-subset box + pad (the component itself).
 # `pole` is absent -> trained on the full frame.
 CROP_ALIGN = {
-    "component": ("anchor", tuple(POLE_CLASSES), POLE_CROP_PAD, 0.30),
+    **{s: ("anchor", tuple(POLE_CLASSES), POLE_CROP_PAD, 0.30) for s in COMP_SUBSETS},
     **{s: ("self", None, CONDITION_CROP_PAD, 0.50) for s in COND_SUBSETS},
 }
 
@@ -99,15 +116,16 @@ _CONDITION_FOLDER_NAMES = [
 CONDITION_SOURCE_DIRS = [SSD_ROOT / "6th june " / n for n in _CONDITION_FOLDER_NAMES]
 SUBSET_SOURCE_DIRS = {
     "pole": SOURCE_DIRS,
-    "component": SOURCE_DIRS,
+    **{s: SOURCE_DIRS for s in COMP_SUBSETS},
     **{s: CONDITION_SOURCE_DIRS for s in COND_SUBSETS},
 }
 
 # Per-subset TRAIN class-balance target (instances/class): cap classes above it, augment below it;
-# val/test stay raw. `component` caps the frequent classes (wire ~3.4k) down and augments the rare
-# ones (rust ~225) up; each condition specialist balances its 2-4 classes to 400.
+# val/test stay raw. Only multi-class detectors with internal imbalance need it: comp_crossarm
+# (straight ~2.9k vs om ~440) and each condition specialist. Single-class detectors (wire,
+# vegetation, rust) have no internal imbalance -> no target (rust stays data-limited regardless).
 BALANCE_TARGET = {
-    "component": 1500,
+    "comp_crossarm": 1000,
     **{s: 400 for s in COND_SUBSETS},
 }
 

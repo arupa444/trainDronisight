@@ -18,8 +18,9 @@ from shared.train_args import build_yolo_args
 from train_yolo.weights import resolve_weights
 from data_prep.emit_yolo import write_data_yaml
 
-# the unified component detector + the 6 per-family condition specialists (all non-pole subsets)
-COMPONENT_SUBSETS = ["component", "cond_v_insulator", "cond_h_insulator", "cond_straight_crossarm",
+# the 5 component specialists + the 6 per-family condition specialists (all non-pole subsets)
+COMPONENT_SUBSETS = ["comp_wire", "comp_insulator", "comp_crossarm", "comp_vegetation", "comp_rust",
+                     "cond_v_insulator", "cond_h_insulator", "cond_straight_crossarm",
                      "cond_top_crossarm", "cond_om_crossarm", "cond_wire"]
 
 

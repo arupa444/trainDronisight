@@ -37,28 +37,28 @@ def _write_img(path, val=120):
 
 @pytest.fixture
 def comp_db(tmp_path, monkeypatch):
-    """mem-style fixture for the unified `component` (anchor/pole-crop) build."""
+    """mem-style fixture for a component specialist (`comp_insulator`, anchor/pole-crop build)."""
     src_a, src_b = tmp_path / "memA", tmp_path / "memB"
     src_a.mkdir(); src_b.mkdir()
-    # 3 distinct images, each with a POLE box (sub-region) + a component on it
-    for i, cls in enumerate(["wire", "h_insulator", "v_insulator"]):
+    # 3 distinct images, each with a POLE box (sub-region) + an insulator on it
+    for i, cls in enumerate(["h_insulator", "v_insulator", "h_insulator"]):
         _write_img(src_a / f"IMG_{i}.JPG", val=30 + i * 40)
         (src_a / f"IMG_{i}.xml").write_text(_voc(W, H, [("pole", 0, 0, 40, 40), (cls, 2, 2, 30, 30)]))
-    # byte-identical photo in BOTH folders, different classes -> must MERGE to union {wire, crossarm_stright}
+    # byte-identical photo in BOTH folders, different classes -> must MERGE to union {h_insulator, v_insulator}
     _write_img(src_a / "SHARED.JPG", val=200)
     shutil.copy(src_a / "SHARED.JPG", src_b / "SHARED.JPG")
-    (src_a / "SHARED.xml").write_text(_voc(W, H, [("pole", 0, 0, 42, 42), ("wire", 5, 5, 40, 40)]))
-    (src_b / "SHARED.xml").write_text(_voc(W, H, [("pole", 0, 0, 42, 42), ("crossarm_stright", 6, 6, 41, 41)]))
+    (src_a / "SHARED.xml").write_text(_voc(W, H, [("pole", 0, 0, 42, 42), ("h_insulator", 5, 5, 40, 40)]))
+    (src_b / "SHARED.xml").write_text(_voc(W, H, [("pole", 0, 0, 42, 42), ("v_insulator", 6, 6, 41, 41)]))
     monkeypatch.setattr(config, "YOLO_DB", tmp_path / "yolo_db")
     monkeypatch.setattr(config, "COCO_DB", tmp_path / "coco_db")
     monkeypatch.setattr(config, "SUBSET_SOURCE_DIRS",
-                        {**config.SUBSET_SOURCE_DIRS, "component": [src_a, src_b]})
+                        {**config.SUBSET_SOURCE_DIRS, "comp_insulator": [src_a, src_b]})
     return tmp_path
 
 
 def test_component_build_crops_merges_and_syncs_dbs(comp_db):
-    build_dataset.build_subset("component", balance=False)
-    ydb, cdb = config.YOLO_DB / "component", config.COCO_DB / "component"
+    build_dataset.build_subset("comp_insulator", balance=False)
+    ydb, cdb = config.YOLO_DB / "comp_insulator", config.COCO_DB / "comp_insulator"
     assert (ydb / "manifest.csv").exists() and (cdb / "dataset_meta.json").exists()
     meta = json.loads((ydb / "dataset_meta.json").read_text())
     assert meta["crop_aligned"] is True and meta["crop_mode"] == "anchor"
@@ -81,8 +81,8 @@ def test_component_build_crops_merges_and_syncs_dbs(comp_db):
     assert len(shared) == 1
     lbl = (ydb / "labels" / shared.iloc[0]["split"] / "orig" / f"{shared.iloc[0]['name']}.txt").read_text().split("\n")
     idxs = sorted(int(l.split()[0]) for l in lbl if l.strip())
-    assert idxs == sorted([config.COMPONENT_CLASSES.index("wire"),
-                           config.COMPONENT_CLASSES.index("crossarm_stright")])
+    assert idxs == sorted([config.COMP_INSULATOR_CLASSES.index("h_insulator"),
+                           config.COMP_INSULATOR_CLASSES.index("v_insulator")])
 
     # YOLO and COCO splits agree; no image-content leakage
     from data_prep.verify_dataset import assert_no_image_content_leakage, find_invalid_labels
@@ -93,7 +93,7 @@ def test_component_build_crops_merges_and_syncs_dbs(comp_db):
         cstems = {Path(im["file_name"]).stem for im in json.loads(cj.read_text())["images"]} if cj.exists() else set()
         assert ystems == cstems
     assert not find_invalid_labels(ydb / "labels")
-    assert_no_image_content_leakage("component")
+    assert_no_image_content_leakage("comp_insulator")
 
 
 def test_cond_self_build_crops_to_each_component(tmp_path, monkeypatch):

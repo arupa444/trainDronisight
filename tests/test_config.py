@@ -2,16 +2,18 @@ from shared import config
 
 def test_class_sets_are_canonical():
     assert config.POLE_CLASSES == ["pole"]
-    # unified component detector: 8 types incl all 3 crossarm kinds together
-    assert config.COMPONENT_CLASSES == ["wire", "h_insulator", "v_insulator", "crossarm_stright",
-                                        "top_crossarm", "om_crossarm", "vegetation", "rust"]
-    assert set(config.SUBSETS) == {"pole", "component", "cond_v_insulator", "cond_h_insulator",
-                                   "cond_straight_crossarm", "cond_top_crossarm",
-                                   "cond_om_crossarm", "cond_wire"}
-    assert config.SUBSET_SOURCE_DIRS["component"] == config.SOURCE_DIRS         # mem captures
+    # 5 component specialists; the 3 crossarm types stay together in comp_crossarm
+    assert config.COMP_SUBSETS == ["comp_wire", "comp_insulator", "comp_crossarm",
+                                   "comp_vegetation", "comp_rust"]
+    assert config.COMP_CROSSARM_CLASSES == ["crossarm_stright", "top_crossarm", "om_crossarm"]
+    assert config.COMP_INSULATOR_CLASSES == ["h_insulator", "v_insulator"]
+    assert len(config.SUBSETS) == 12      # pole + 5 component + 6 condition
+    assert config.SUBSET_SOURCE_DIRS["comp_wire"] == config.SOURCE_DIRS            # mem captures
     assert config.SUBSET_SOURCE_DIRS["cond_wire"] == config.CONDITION_SOURCE_DIRS  # 6th-june
-    assert config.BALANCE_TARGET["component"] == 1500
+    # only the imbalanced multi-class detectors carry a target; single-class ones don't
+    assert config.BALANCE_TARGET["comp_crossarm"] == 1000
     assert config.BALANCE_TARGET["cond_v_insulator"] == 400
+    assert "comp_wire" not in config.BALANCE_TARGET and "comp_rust" not in config.BALANCE_TARGET
     # om_crossarm now has a band condition class (was previously dropped)
     assert config.COND_OM_CROSSARM_CLASSES == ["om_crossarm_normal", "om_crossarm_band"]
 
@@ -33,13 +35,14 @@ def test_condition_specialists_route_and_partition():
 
 
 def test_crop_alignment_modes():
-    # `component` crops to the pole (anchor); each cond_* crops to the component itself (self)
-    assert config.CROP_ALIGN["component"][0] == "anchor"
+    # every comp_* crops to the pole (anchor); each cond_* crops to the component itself (self)
+    for s in config.COMP_SUBSETS:
+        assert config.CROP_ALIGN[s][0] == "anchor"
+        assert config.CROP_ALIGN[s][2] == config.POLE_CROP_PAD
     for s in config.COND_SUBSETS:
         assert config.CROP_ALIGN[s][0] == "self"
         assert config.CROP_ALIGN[s][2] == config.CONDITION_CROP_PAD
     assert "pole" not in config.CROP_ALIGN                  # pole trains on the full frame
-    assert config.CROP_ALIGN["component"][2] == config.POLE_CROP_PAD
 
 def test_split_ratios_sum_to_one():
     assert abs(sum(config.SPLIT_RATIOS.values()) - 1.0) < 1e-9
