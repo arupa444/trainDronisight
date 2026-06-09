@@ -219,7 +219,8 @@ def main():
     ap.add_argument("--out-csv", default=None, help="override CSV path (default <run>/result.csv)")
     ap.add_argument("--viz-dir", default=None, help="override viz dir (default <run>/viz)")
     ap.add_argument("--no-viz", action="store_true", help="skip the 4 annotated-view images")
-    ap.add_argument("--pole-pad", type=float, default=0.05)
+    ap.add_argument("--pole-pad", type=float, default=config.POLE_CROP_PAD,
+                    help="pole-crop padding; MUST match config.POLE_CROP_PAD used to build the *_crop datasets")
     ap.add_argument("--pole-conf", type=float, default=0.12,   # recall-leaning (Stage-1: don't miss poles)
                     help="pole-stage confidence; low favors recall")
     ap.add_argument("--comp-conf", type=float, default=0.25,
