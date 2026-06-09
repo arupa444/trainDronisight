@@ -15,17 +15,25 @@ inference pipeline. Detection + condition v1.
 
 ## 0. Mental model (read once)
 
-- **Four-stage pipeline.** `pole` (full frame) → crop to the pole → run **two** component detectors
-  on that crop: `component_above_1000` (wire, h_insulator, v_insulator, crossarm_stright) and
-  `component_below_1000` (vegetation, top_crossarm, om_crossarm, rust) → crop each detected
-  component → `component_classification` (14 **condition** classes, e.g. `v_insulator_broken`).
-  Four separate trainings → separate weights → chained only at inference.
-- **Three model families, pick the winner.** YOLO26x and Faster R-CNN train on the M4 (MPS);
+- **Specialist pipeline — 12 models in 3 stages** (each component/condition split into focused
+  specialists for accuracy + precise output):
+  1. **`pole`** — full frame.
+  2. **5 component detectors**, each on the pole crop (segregated by visual scale; the 3 crossarm
+     types share one detector so they stop being mis-typed):
+     `comp_wire` · `comp_insulator` (h_insulator, v_insulator) · `comp_crossarm` (crossarm_stright,
+     top_crossarm, om_crossarm) · `comp_vegetation` · `comp_rust`.
+  3. **6 condition specialists**, each on the matching component's crop:
+     `cond_v_insulator` (normal/band/broken/chip_off) · `cond_h_insulator` (normal/broken/chip_off) ·
+     `cond_straight_crossarm` (normal/band) · `cond_top_crossarm` (normal/band) ·
+     `cond_om_crossarm` (normal/band) · `cond_wire` (wire_normal/cross_wire).
+  Each detected component routes to its condition specialist via `config.COMPONENT_TO_CONDITION_MODEL`
+  (vegetation/rust have no condition). All trained separately → chained at inference.
+- **Three model families, pick the winner.** YOLO26 and Faster R-CNN train on the M4 (MPS);
   RF-DETR-L wants CUDA → Colab. The `Detection`/`Detector` backends are interchangeable, so any
   stage can run any family. Keep whichever wins on **val mAP@.5**.
-- **Seven datasets.** The 4 subsets above as **full-frame** detectors, plus 3 **crop-aligned**
-  variants (`*_crop`) that train on pole/component crops so train scale == inference scale. Train
-  both and pick the val-mAP winner (the small-object ablation).
+- **Crop-aligned by construction.** Component detectors train on the **pole crop** and condition
+  specialists on the **component crop** (`config.CROP_ALIGN`, pads `POLE_CROP_PAD` / `CONDITION_CROP_PAD`)
+  so train scale == inference scale. `pole` trains on the full frame.
 - **Two machines.** Code + the one-time data build happen on the dev laptop; **all training /
   inference runs on the M4 Pro (24 GB, Apple Silicon / MPS)**. Device auto-selects CUDA→MPS→CPU.
 - **The data is already built.** You only rebuild if you change taxonomy / CLAHE / split / balance.
@@ -54,20 +62,20 @@ uv pip install -e ".[dev]"
 python -c "from shared import config; print(config.YOLO_DB)"   # -> /Volumes/dronisight/yolo_train_db
 pytest -q                                                       # full suite passes
 
-# 5. Train the 4 YOLO detectors (primary models, MPS). yolo26x@1280 may OOM on 24GB:
-#    drop --batch to 2 or use --model yolo26l.pt / yolo26m.pt.
+# 5. Train YOLO — pole + 5 component + 6 condition specialists (12 models). On Colab use
+#    colab_train_yolo.ipynb (A100). Locally (MPS), per §9; e.g. one component specialist:
 python -m train_yolo.train_pole       --version clahe --epochs 100 --imgsz 640  --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_above_1000    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_below_1000    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset comp_crossarm --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+#    ... (comp_wire/insulator/vegetation/rust + the 6 cond_*; see §9)
 
-# 6. Full 4-stage inference
+# 6. Inference (the pipeline currently chains pole -> component -> condition; multi-specialist
+#    routing across the 5 component + 6 condition models is being wired — see §13).
 python -m inference.pipeline --image some.jpg \
-  --pole-weights        runs/pole/yolo/weights/best.pt \
-  --comp-above-weights  runs/component_above_1000/yolo/weights/best.pt \
-  --comp-below-weights  runs/component_below_1000/yolo/weights/best.pt \
-  --condition-weights   runs/component_classification/yolo/weights/best.pt \
-  --out runs/inference/result.json
+  --pole-weights      runs/pole/yolo/weights/best.pt \
+  --comp-above-weights runs/comp_crossarm/yolo/weights/best.pt \
+  --comp-below-weights runs/comp_wire/yolo/weights/best.pt \
+  --condition-weights runs/cond_v_insulator/yolo/weights/best.pt \
+  --out-dir runs/inference
 ```
 
 Everything below explains each step and the comparison models / crop ablation.
@@ -125,12 +133,11 @@ python -c "from shared import config; print(config.YOLO_DB)"
 Only if you change class policy / CLAHE / split / balance / crop logic. The DBs are otherwise ready.
 
 ```bash
-python -m data_prep.build_dataset --subset all          # 4 full-frame base subsets, into both DBs
-python -m data_prep.build_dataset --subset all_crop     # the 3 crop-aligned variants
-# (or `--subset all_both` for all 7; or a single subset name)
+python -m data_prep.build_dataset --subset all          # all 12 subsets into both DBs (pole + 5 comp + 6 cond)
+# or just the condition specialists:  --subset all_cond ;  or a single subset name
 
-for s in pole component_above_1000 component_below_1000 component_classification \
-         component_above_1000_crop component_below_1000_crop component_classification_crop; do
+for s in pole comp_wire comp_insulator comp_crossarm comp_vegetation comp_rust \
+         cond_v_insulator cond_h_insulator cond_straight_crossarm cond_top_crossarm cond_om_crossarm cond_wire; do
   python -m data_prep.verify_dataset --subset "$s"      # group + image-content leakage + label validity
 done
 ```
@@ -157,20 +164,25 @@ What the build does (the non-obvious parts):
 ## 7. The datasets (what you train on)
 
 Two parallel DBs, same splits: `yolo_train_db/` (YOLO `.txt`, primary) and
-`RF_DETR_Faster_RCNN_train_db/` (COCO JSON, for Faster R-CNN + RF-DETR). Each holds all 7 subsets.
-Approximate current build sizes (train / val / test images):
+`RF_DETR_Faster_RCNN_train_db/` (COCO JSON, for Faster R-CNN + RF-DETR). 12 subsets:
 
-| Subset | classes | scale | size | balance |
-|---|---|---|---|---|
-| `pole` | 1 | full frame | 1692 / 425 / 89 | n/a |
-| `component_above_1000` | 4 frequent | full frame | 1314 / 281 / 97 | cap→rarest |
-| `component_below_1000` | 4 rare | full frame | 1375 / 191 / 42 | oversample |
-| `component_classification` | 14 condition | full frame | 2433 / 389 / 122 | target-400 |
-| `component_above_1000_crop` | 4 frequent | **pole crop** | 1399 / 302 / 88 | cap→rarest |
-| `component_below_1000_crop` | 4 rare | **pole crop** | 1431 / 208 / 59 | oversample |
-| `component_classification_crop` | 14 condition | **component crop** | 5101 / 1072 / 270 | target-400 |
+| Subset | classes | scale | balance |
+|---|---|---|---|
+| `pole` | pole | full frame | n/a |
+| `comp_wire` | wire | pole crop | n/a (1 class) |
+| `comp_insulator` | h_insulator, v_insulator | pole crop | cap→rarest |
+| `comp_crossarm` | crossarm_stright, top_crossarm, om_crossarm | pole crop | target-1000 |
+| `comp_vegetation` | vegetation | pole crop | n/a (1 class) |
+| `comp_rust` | rust | pole crop | n/a (1 class, data-limited) |
+| `cond_v_insulator` | normal, band, broken, chip_off | component crop | target-400 |
+| `cond_h_insulator` | normal, broken, chip_off | component crop | target-400 |
+| `cond_straight_crossarm` | normal, band | component crop | target-400 |
+| `cond_top_crossarm` | normal, band | component crop | target-400 |
+| `cond_om_crossarm` | normal, band | component crop | target-400 |
+| `cond_wire` | wire_normal, cross_wire | component crop | target-400 |
 
-YOLO weights land at `runs/<subset>/yolo/weights/best.pt`.
+YOLO weights land at `runs/<subset>/yolo/weights/best.pt`. Build: `--subset all` (all 12),
+`all_cond` (the 6 condition), or a single name.
 
 ## 8. Preprocessing (already correct — what it does)
 
@@ -186,24 +198,30 @@ YOLO weights land at `runs/<subset>/yolo/weights/best.pt`.
   train/val/test. **Train both full-frame and crop, keep the val-mAP winner** (helps thin wires /
   small insulators most).
 
-## 9. Train — YOLO26x (M4 / MPS, primary)
+## 9. Train — YOLO (M4 / MPS, or Colab via `colab_train_yolo.ipynb`)
 
+The authoritative training path is **`colab_train_yolo.ipynb`** (A100, auto-batch, saves to Drive
+per model). Equivalent commands:
 ```bash
-# full-frame detectors (train in this order)
-python -m train_yolo.train_pole       --version clahe --epochs 100 --imgsz 640  --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_above_1000    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_below_1000    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_classification --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+# pole (full frame, 640)
+python -m train_yolo.train_pole --version clahe --epochs 100 --imgsz 640 --batch 4 --model yolo26x.pt
 
-# crop-aligned ablation (same flags, _crop subsets). Compare each to its full-frame twin on val mAP.
-python -m train_yolo.train_components --subset component_above_1000_crop    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_below_1000_crop    --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26x.pt
-python -m train_yolo.train_components --subset component_classification_crop --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+# 5 component specialists (pole crop, 1280). Data-rich -> yolo26x; small -> yolo26m.
+python -m train_yolo.train_components --subset comp_wire        --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset comp_insulator   --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset comp_crossarm    --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26x.pt
+python -m train_yolo.train_components --subset comp_vegetation  --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
+python -m train_yolo.train_components --subset comp_rust        --version clahe --epochs 200 --imgsz 1280 --batch 4 --model yolo26m.pt
+
+# 6 condition specialists (component crop, 1280) -> yolo26m (small focused families)
+for s in cond_v_insulator cond_h_insulator cond_straight_crossarm cond_top_crossarm cond_om_crossarm cond_wire; do
+  python -m train_yolo.train_components --subset $s --version clahe --epochs 150 --imgsz 1280 --batch 4 --model yolo26m.pt
+done
 ```
-- **`imgsz 640` for pole** (it fills the frame) — saves ~¾ the memory vs 1280. **`imgsz 1280` for
-  components** — thin wires vanish at low res.
-- **OOM on 24 GB?** `yolo26x@1280` is the usual culprit → use `--model yolo26l.pt` / `yolo26m.pt`
-  (also the main anti-overfit lever on this small data) and/or `--batch 2`.
+- **`imgsz 640` for pole** (fills the frame); **`imgsz 1280`** for all crops (thin wires / subtle defects).
+- **Model choice:** data-rich detectors (`comp_wire/insulator/crossarm`) → **yolo26x**; small/data-limited
+  (`comp_vegetation`, `comp_rust`, every `cond_*`) → **yolo26m** (resists overfit on ~200–1.5k instances).
+- **OOM on 24 GB?** `yolo26x@1280` → drop `--batch` to 2 or use `yolo26l/m`.
 - **`yolo26x → yolo11x` fallback** is a printed warning (YOLO26 weights not fetchable on your
   Ultralytics), **not an error**.
 - Train **both `--version clahe` and `--version orig`**; compare on val mAP. Watch the train/val gap
@@ -211,13 +229,13 @@ python -m train_yolo.train_components --subset component_classification_crop --v
 
 ## 10. Train — Faster R-CNN (M4 / MPS, comparison)
 
+Same `--subset` names as YOLO (any of the 12). Examples:
 ```bash
-python -m train_faster_rcnn.train --subset pole                    --version clahe --epochs 30 --batch 2
-python -m train_faster_rcnn.train --subset component_above_1000    --version clahe --epochs 30 --batch 2
-python -m train_faster_rcnn.train --subset component_below_1000    --version clahe --epochs 30 --batch 2
-python -m train_faster_rcnn.train --subset component_classification --version clahe --epochs 60 --batch 2
+python -m train_faster_rcnn.train --subset pole          --version clahe --epochs 30 --batch 2
+python -m train_faster_rcnn.train --subset comp_crossarm --version clahe --epochs 30 --batch 2
+# ... repeat for each comp_* / cond_* you want to compare ...
 # per-class AP (use the SAME --min-size you trained with):
-python -m train_faster_rcnn.eval  --subset component_above_1000    --version clahe --split test
+python -m train_faster_rcnn.eval  --subset comp_crossarm --version clahe --split test
 ```
 - **`--min-size` defaults to 2000** (torchvision's default 800 shrinks thin wires away). `best.pt`
   (lowest val loss, `--patience 7` early stop) is the checkpoint to use. Output:
@@ -225,12 +243,11 @@ python -m train_faster_rcnn.eval  --subset component_above_1000    --version cla
 
 ## 11. Train — RF-DETR-L (Colab / CUDA, comparison)
 
-Impractical on MPS — use the `03_train_rf_detr` Colab notebook (see §15).
+Impractical on MPS — use Colab/CUDA. Same `--subset` names (any of the 12):
 ```bash
-python -m train_rf_detr.train --subset pole                    --version clahe --epochs 50 --batch 4 --resolution 672
-python -m train_rf_detr.train --subset component_above_1000    --version clahe --epochs 50 --batch 4 --resolution 672
-python -m train_rf_detr.train --subset component_below_1000    --version clahe --epochs 50 --batch 4 --resolution 672
-python -m train_rf_detr.train --subset component_classification --version clahe --epochs 50 --batch 8 --resolution 1120
+python -m train_rf_detr.train --subset pole          --version clahe --epochs 50 --batch 4 --resolution 672
+python -m train_rf_detr.train --subset comp_crossarm --version clahe --epochs 50 --batch 4 --resolution 672
+# ... repeat per subset; raise --resolution (e.g. 1120) for the small-object specialists ...
 ```
 - `--resolution` must be a multiple of the model **block_size** (`patch_size*num_windows` = **32** on
   the current RF-DETR build). **672 / 896 / 1120** are multiples of *both* 32 and 56, so they're safe
@@ -248,6 +265,12 @@ threshold on **val**, freeze it, touch **test** once. Rare classes like `rust` h
 (n≈3) — judge them on val and on recall.
 
 ## 13. Inference
+
+> **Routing update in progress.** With the new architecture there are **5 component detectors + 6
+> condition specialists**. `inference/pipeline.py` currently chains 4 detectors (pole + 2 component
+> slots + 1 condition) — the multi-specialist routing (run all 5 component detectors → NMS → route
+> each detection to its condition model via `config.COMPONENT_TO_CONDITION_MODEL`) is being wired and
+> will land once the new models finish training. The single-model CLIs below work today for any subset.
 
 ### Single stage (debugging; YOLO CLIs)
 `--image` takes a file **or a directory**. `--out-csv` writes a flat per-detection CSV (`image,class,confidence,x1,y1,x2,y2`); `--out` writes JSON.
