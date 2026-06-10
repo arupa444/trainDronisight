@@ -95,6 +95,11 @@ COMPONENT_TO_CONDITIONS = {c: SUBSET_CLASSES[m] for c, m in COMPONENT_TO_CONDITI
 # Crop padding (single source of truth so BUILD scale == inference scale):
 POLE_CROP_PAD = 0.05        # `component` detector: crop to the pole box + this pad (== inference --pole-pad)
 CONDITION_CROP_PAD = 0.25   # `cond_*` specialists: crop to the component box + this pad (== inference --condition-pad)
+# Padding for the SAVED component crop / thumbnail (display + the crop_path in result.csv) so a thin
+# edge band isn't clipped from view. This is presentation only — the condition MODEL is always fed the
+# CONDITION_CROP_PAD (0.25) crop it was trained on, NOT this one (raising the model's pad past its
+# trained value would be a train/serve mismatch and hurt accuracy).
+COMPONENT_CROP_PAD = 0.05
 
 # How each subset is crop-aligned at BUILD time. A subset is crop-trained IFF it appears here.
 #   "anchor": crop to each anchor (pole) box + pad; keep in-subset boxes >= min_visible.

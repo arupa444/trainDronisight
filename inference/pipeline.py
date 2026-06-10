@@ -118,7 +118,8 @@ def nms_components(items, iou_thresh):
 
 def run_pipeline(image, pole_detector, component_detectors, condition_detectors=None,
                  crop_dir=None, image_name="image.jpg", pole_pad=0.05, name_stem=None,
-                 nms_iou=0.55, condition_pad=config.CONDITION_CROP_PAD):
+                 nms_iou=0.55, condition_pad=config.CONDITION_CROP_PAD,
+                 component_pad=config.COMPONENT_CROP_PAD):
     """image: BGR ndarray. Returns the structured result dict.
       * component_detectors: an iterable of the component specialists; ALL run on the padded pole crop,
         their boxes are remapped to the full frame and de-duplicated with class-agnostic NMS (nms_iou;
@@ -140,8 +141,8 @@ def run_pipeline(image, pole_detector, component_detectors, condition_detectors=
             combined = nms_components(combined, nms_iou)
         comps_out = []
         for ci, (comp, full) in enumerate(combined):
-            comp_crop, _ = crop_with_pad(image, full.box, pad_frac=0.0)            # tight, for saving
-            cond_crop, _ = crop_with_pad(image, full.box, pad_frac=condition_pad)  # padded, for condition (matches training)
+            comp_crop, _ = crop_with_pad(image, full.box, pad_frac=component_pad)  # small pad, for the saved/display crop (band not clipped)
+            cond_crop, _ = crop_with_pad(image, full.box, pad_frac=condition_pad)  # 0.25 pad, fed to the condition model (matches training)
             entry = {
                 "class": comp.class_name,
                 "confidence": comp.confidence,
@@ -255,6 +256,9 @@ def main():
     ap.add_argument("--condition-pad", type=float, default=config.CONDITION_CROP_PAD,
                     help="padding around each component when cropping it for the condition model; "
                          "MUST match config.CONDITION_CROP_PAD used to build the cond_* datasets")
+    ap.add_argument("--component-pad", type=float, default=config.COMPONENT_CROP_PAD,
+                    help="padding for the SAVED component crop/thumbnail only (so edge bands aren't "
+                         "clipped from view); does NOT change what the condition model is fed")
     ap.add_argument("--pole-conf", type=float, default=0.12,   # recall-leaning (Stage-1: don't miss poles)
                     help="pole-stage confidence; low favors recall")
     ap.add_argument("--comp-conf", type=float, default=0.25, help="confidence for the component detectors")
@@ -312,7 +316,7 @@ def main():
         result = run_pipeline(image, pole_det, component_dets, condition_dets,
                               crop_dir=crop_dir, image_name=p.name, pole_pad=a.pole_pad,
                               name_stem=out_stem, nms_iou=(1.0 if a.no_nms else a.nms_iou),
-                              condition_pad=a.condition_pad)
+                              condition_pad=a.condition_pad, component_pad=a.component_pad)
         results.append(result)
         rows.extend(result_to_rows(result))
         if not a.no_viz:
