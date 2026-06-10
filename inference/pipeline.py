@@ -168,30 +168,37 @@ def nms_detections(dets, iou_thresh):
 
 
 def resolve_condition_overlaps(dets, ios_thresh):
-    """Resolve normal-vs-damage conflicts among a component's condition detections (Detection list,
-    crop coords). Greedy by confidence using intersection-over-smaller (so a small band box inside a
-    big normal box counts as overlapping). A box is DROPPED if it overlaps an already-kept box and
-    either (a) is the same class (duplicate), or (b) has the OPPOSITE normal/damage polarity. Net:
-      * normal wins (highest conf) -> overlapping damages dropped -> [normal]
-      * a damage wins -> the overlapping normal dropped, ALL overlapping damages kept (band + broken)."""
+    """Per-component condition resolution with DEFECT PRIORITY: a real defect (chip_off/band/broken)
+    is NEVER removed just because a `*_normal` box scored higher — for inspection, a missed defect is
+    worse than a false alarm. Using intersection-over-smaller (so a small band box inside a big normal
+    box counts as overlapping):
+      * keep every defect detection, de-duplicating SAME-class boxes (keep the higher confidence);
+      * keep a `*_normal` box ONLY if it does NOT overlap any kept defect (a defective component is
+        not 'normal'); normals also de-dup among themselves.
+    Net: multiple defects coexist (band + chip_off); normal shows only when no defect is present.
+    Confidence is the lever for false positives — raise --cond-conf to drop weak defect detections."""
     def is_normal(d):
         return d.class_name.endswith("_normal")
-    kept = []
-    for d in sorted(dets, key=lambda d: d.confidence, reverse=True):
-        drop = False
-        for k in kept:
-            if _ios_xyxy(d.box, k.box) >= ios_thresh and (
-                    d.class_name == k.class_name or is_normal(d) != is_normal(k)):
-                drop = True
-                break
-        if not drop:
+
+    def add_unique(d, kept):
+        if all(not (d.class_name == k.class_name and _ios_xyxy(d.box, k.box) >= ios_thresh) for k in kept):
             kept.append(d)
-    return kept
+
+    ordered = sorted(dets, key=lambda d: d.confidence, reverse=True)
+    kept_defects = []
+    for d in ordered:
+        if not is_normal(d):
+            add_unique(d, kept_defects)
+    kept_normals = []
+    for d in ordered:
+        if is_normal(d) and not any(_ios_xyxy(d.box, k.box) >= ios_thresh for k in kept_defects):
+            add_unique(d, kept_normals)
+    return kept_defects + kept_normals
 
 
 def run_pipeline(image, pole_detector, component_detectors, condition_detectors=None,
                  crop_dir=None, image_name="image.jpg", pole_pad=0.05, name_stem=None,
-                 nms_iou=config.COMPONENT_NMS_IOU, condition_pad=config.CONDITION_CROP_PAD,
+                 nms_iou=config.COMPONENT_NMS_IOU, condition_pad=config.CONDITION_INFER_PAD,
                  component_pad=config.COMPONENT_CROP_PAD, pole_nms_iou=config.POLE_NMS_IOU,
                  same_class_iou=config.COMPONENT_SAME_CLASS_IOU,
                  condition_ios=config.CONDITION_OVERLAP_IOS):
@@ -331,9 +338,9 @@ def main():
     ap.add_argument("--no-condition", action="store_true", help="skip the condition stage entirely")
     ap.add_argument("--pole-pad", type=float, default=config.POLE_CROP_PAD,
                     help="pole-crop padding; MUST match config.POLE_CROP_PAD used to build the comp_* datasets")
-    ap.add_argument("--condition-pad", type=float, default=config.CONDITION_CROP_PAD,
-                    help="padding around each component when cropping it for the condition model; "
-                         "MUST match config.CONDITION_CROP_PAD used to build the cond_* datasets")
+    ap.add_argument("--condition-pad", type=float, default=config.CONDITION_INFER_PAD,
+                    help="inference padding around each component for the condition crop; larger than the "
+                         "0.25 build pad to reach the band/hinge past the head-only detector box")
     ap.add_argument("--component-pad", type=float, default=config.COMPONENT_CROP_PAD,
                     help="padding for the SAVED component crop/thumbnail only (so edge bands aren't "
                          "clipped from view); does NOT change what the condition model is fed")

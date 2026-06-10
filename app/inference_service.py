@@ -112,7 +112,7 @@ class InspectionService:
         result = run_pipeline(image, self.pole_det, self.component_dets, self.condition_dets,
                               crop_dir=str(run_dir / "crops"), image_name=image_path.name,
                               pole_pad=config.POLE_CROP_PAD, name_stem=stem,
-                              nms_iou=self.nms_iou, condition_pad=config.CONDITION_CROP_PAD,
+                              nms_iou=self.nms_iou, condition_pad=config.CONDITION_INFER_PAD,
                               component_pad=config.COMPONENT_CROP_PAD)
 
         if progress:

@@ -104,15 +104,18 @@ COMPONENT_TO_CONDITIONS = {c: SUBSET_CLASSES[m] for c, m in COMPONENT_TO_CONDITI
 
 # Crop padding (single source of truth so BUILD scale == inference scale):
 POLE_CROP_PAD = 0.05        # `component` detector: crop to the pole box + this pad (== inference --pole-pad)
-# `cond_*` specialists crop to the component box + this pad. Raised 0.25 -> 0.40 so the crop reaches
-# DOWN past the insulator head to the band/hinge (bands were being clipped out of the head-only crop).
-# CROP_ALIGN below uses this value, so the cond_* datasets must be REBUILT and the 6 condition models
-# RETRAINED at 0.40 for train==serve parity (existing weights were trained at 0.25).
-CONDITION_CROP_PAD = 0.40
-# Padding for the SAVED component crop / thumbnail (display + the crop_path in result.csv) so a thin
-# edge band isn't clipped from view. This is presentation only — the condition MODEL is fed the
-# CONDITION_CROP_PAD crop, NOT this one.
-COMPONENT_CROP_PAD = 0.05
+# BUILD pad for cond_* datasets. Annotators boxed each component down to the hinge, so 0.25 around that
+# GT box already includes the band. CROP_ALIGN uses this -> do NOT change without rebuilding cond_*.
+CONDITION_CROP_PAD = 0.25
+# INFERENCE pad for the condition crop. It is LARGER than the build pad on purpose: the component
+# DETECTOR boxes mostly the insulator HEAD (tighter than the hinge-to-hinge GT box), so detector_box +
+# 0.25 would clip the band. detector_box + 0.40 (~0.25 trained + 0.15 extra reach) restores the
+# band/hinge context and better matches the training distribution. No rebuild needed; tune via
+# --condition-pad.
+CONDITION_INFER_PAD = 0.40
+# Saved component crop / thumbnail padding (display + the crop_path in result.csv) so a thin edge band
+# isn't clipped from view. Presentation ONLY — the condition MODEL is fed the CONDITION_INFER_PAD crop.
+COMPONENT_CROP_PAD = 0.15
 
 # Inference de-duplication thresholds:
 POLE_NMS_IOU = 0.5               # drop duplicate pole boxes on the same pole (keep highest confidence)

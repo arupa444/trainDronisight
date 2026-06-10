@@ -205,23 +205,32 @@ def test_run_pipeline_dedups_duplicate_poles(tmp_path):
     assert len(out["poles"]) == 1 and out["poles"][0]["confidence"] == 0.9
 
 
-def test_resolve_conditions_normal_wins_drops_damage():
-    # case 1: normal has the highest confidence -> keep normal, drop overlapping damage
+def test_resolve_conditions_defect_priority_over_higher_normal():
+    # DEFECT PRIORITY: a real band/chip_off is NOT removed even when normal scores HIGHER
     from inference.pipeline import resolve_condition_overlaps
     dets = [Detection("v_insulator_normal", 0.7, (0, 0, 100, 100)),
             Detection("v_insulator_band", 0.4, (40, 40, 60, 60))]   # band sits INSIDE normal
-    out = resolve_condition_overlaps(dets, 0.5)
-    assert [d.class_name for d in out] == ["v_insulator_normal"]
+    out = [d.class_name for d in resolve_condition_overlaps(dets, 0.5)]
+    assert out == ["v_insulator_band"]                              # normal dropped, defect kept
 
 
-def test_resolve_conditions_damage_wins_keeps_all_damages():
-    # case 2: a damage beats normal -> drop the normal, KEEP all overlapping damages (band + broken)
+def test_resolve_conditions_keeps_all_damages_drops_normal():
+    # multiple defects coexist (band + broken); the overlapping normal is dropped
     from inference.pipeline import resolve_condition_overlaps
     dets = [Detection("v_insulator_band", 0.8, (0, 0, 100, 100)),
-            Detection("v_insulator_normal", 0.7, (0, 0, 100, 100)),
+            Detection("v_insulator_normal", 0.9, (0, 0, 100, 100)),   # even the HIGHEST-conf normal loses
             Detection("v_insulator_broken", 0.6, (0, 0, 100, 100))]
     out = sorted(d.class_name for d in resolve_condition_overlaps(dets, 0.5))
     assert out == ["v_insulator_band", "v_insulator_broken"]
+
+
+def test_resolve_conditions_normal_kept_when_no_defect():
+    # a clean component -> normal survives (and same-class duplicate normals collapse)
+    from inference.pipeline import resolve_condition_overlaps
+    dets = [Detection("h_insulator_normal", 0.6, (0, 0, 100, 100)),
+            Detection("h_insulator_normal", 0.5, (2, 2, 98, 98))]
+    out = [d.class_name for d in resolve_condition_overlaps(dets, 0.5)]
+    assert out == ["h_insulator_normal"]
 
 
 def test_filtered_detector_keeps_only_allowed():
