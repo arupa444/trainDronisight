@@ -5,12 +5,13 @@ from inference.visualize import render_layers, save_layers, LAYERS
 def _result():
     return {"image": "x.jpg", "poles": [{
         "box": [10, 10, 90, 190], "confidence": 0.9, "crop_path": "p.jpg",
-        "components_above": [{"class": "v_insulator", "confidence": 0.8,
-                             "box_full": [20, 30, 60, 70], "box_crop": [0, 0, 40, 40], "crop_path": "c.jpg",
-                             "condition": {"class": "v_insulator_band", "confidence": 0.6},
-                             "conditions": [{"class": "v_insulator_band", "confidence": 0.6, "box_comp": [2, 3, 30, 35]}]}],
-        "components_below": [{"class": "vegetation", "confidence": 0.4,
-                             "box_full": [0, 100, 99, 199], "box_crop": [0, 0, 99, 99], "crop_path": "v.jpg"}],
+        "components": [
+            {"class": "v_insulator", "confidence": 0.8,
+             "box_full": [20, 30, 60, 70], "box_crop": [0, 0, 40, 40], "crop_path": "c.jpg",
+             "condition": {"class": "v_insulator_band", "confidence": 0.6},
+             "conditions": [{"class": "v_insulator_band", "confidence": 0.6, "box_comp": [2, 3, 30, 35]}]},
+            {"class": "vegetation", "confidence": 0.4,
+             "box_full": [0, 100, 99, 199], "box_crop": [0, 0, 99, 99], "crop_path": "v.jpg"}],
     }]}
 
 

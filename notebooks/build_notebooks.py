@@ -79,23 +79,21 @@ NOTEBOOKS = {
         "ensure_dataset(drive_db_zip('yolo_train_db'), '/content/data', 'yolo_train_db')",
         "# fresh runtime? pull previously-trained weights back from Drive into runs/\n"
         "from notebooks.colab_utils import restore_runs_from_drive\nprint('restored', restore_runs_from_drive(), 'files from Drive')",
-        "# point these at the three trained detectors (now in runs/ after the restore above)\n"
-        "import glob, os\n"
-        "POLE=max(glob.glob('runs/pole/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
-        "ABOVE=max(glob.glob('runs/component_above_1000/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
-        "BELOW=max(glob.glob('runs/component_below_1000/yolo*/weights/best.pt'), key=os.path.getmtime)\n"
-        "# stage 4 (optional): component condition classifier; empty if not trained yet\n"
-        "CONDG=glob.glob('runs/component_classification/yolo*/weights/best.pt')\n"
-        "COND=max(CONDG, key=os.path.getmtime) if CONDG else None\nprint(POLE, ABOVE, BELOW, COND)",
-        "import glob\nIMG=sorted(glob.glob('/content/data/yolo_train_db/component_above_1000/images/test/orig/*.jpg'))[0]\nprint(IMG)",
-        "# add --condition-weights $COND to attach a 'conditions' list to every detected component\n"
-        "COND_ARG=f'--condition-weights {COND}' if COND else ''\n"
-        "!python -m inference.pipeline --image \"$IMG\" --pole-weights $POLE --comp-above-weights $ABOVE --comp-below-weights $BELOW $COND_ARG --out /content/result.json",
-        "import json; print(json.dumps(json.load(open('/content/result.json')), indent=2))",
-        "# persist the result + crops to Drive\n"
-        "from notebooks.colab_utils import save_runs_to_drive\n"
-        "import shutil, os\nos.makedirs('runs/inference', exist_ok=True)\n"
-        "shutil.copy('/content/result.json', 'runs/inference/result.json')\nprint('saved to', save_runs_to_drive())",
+        "# the 12 weights (pole + 5 component + 6 condition specialists) are auto-discovered by\n"
+        "# subset name under runs/ (restored above) — no per-model flags needed\n"
+        "from shared import config\nfrom inference.pipeline import discover_weights\n"
+        "found=discover_weights('runs', config.SUBSETS)\nprint({s: s in found for s in config.SUBSETS})",
+        "import glob\nIMG=sorted(glob.glob('/content/data/yolo_train_db/comp_insulator/images/test/clahe/*.jpg'))[0]\nprint(IMG)",
+        "# full 12-model routing: pole -> 5 component specialists -> NMS -> route each to its\n"
+        "# condition specialist. result.csv + result.json + viz/{pole,components,conditions,all}/\n"
+        "!python -m inference.pipeline --image \"$IMG\" --weights-dir runs --out-dir /content/inference",
+        "import glob, os, json\nrun=sorted(glob.glob('/content/inference/*_inference*'), key=os.path.getmtime)[-1]\n"
+        "print('run dir:', run)\nprint(json.dumps(json.load(open(f'{run}/result.json')), indent=2)[:2000])",
+        "# preview the annotated 'all' views\n"
+        "from IPython.display import Image, display\n"
+        "[display(Image(filename=p, width=900)) for p in sorted(glob.glob(f'{run}/viz/all/*.jpg'))[:5]]",
+        "# persist the whole run (csv/json/crops/viz) to Drive\n"
+        "import shutil\nshutil.copytree(run, f\"/content/drive/MyDrive/finalGo/inference/{os.path.basename(run)}\", dirs_exist_ok=True)\nprint('saved to Drive')",
     ],
 }
 

@@ -1,17 +1,16 @@
 """Draw pipeline results onto the full frame as four layered views:
   pole        - just the pole box(es)
-  components  - the above+below component boxes (remapped to the full frame)
-  conditions  - the per-component condition box(es), labeled with the condition class
+  components  - the component boxes (5 specialists, post-NMS, remapped to the full frame)
+  conditions  - the per-component routed condition, drawn ON the component box
   all         - everything overlaid
-All boxes are in full-frame pixel coords. Condition boxes are stored in component-crop coords
-(box_comp), so we shift them by the component's full-frame top-left to place them on the frame.
+All boxes are in full-frame pixel coords. The condition is shown on the component box (no separate
+near-duplicate box).
 """
 import cv2
 
 # BGR colors
 C_POLE = (0, 220, 0)        # green
-C_ABOVE = (255, 160, 0)     # blue
-C_BELOW = (200, 0, 200)     # magenta
+C_COMP = (255, 160, 0)      # blue
 C_COND = (0, 0, 255)        # red
 LAYERS = ["pole", "components", "conditions", "all"]
 
@@ -43,16 +42,15 @@ def render_layers(frame_bgr, result):
         plabel = f"pole {pole['confidence']:.2f}"
         _draw_box(out["pole"], pole["box"], plabel, C_POLE)
         _draw_box(out["all"], pole["box"], plabel, C_POLE)
-        for grp, color in (("components_above", C_ABOVE), ("components_below", C_BELOW)):
-            for c in pole.get(grp, []):
-                box = c["box_full"]
-                _draw_box(out["components"], box, f"{c['class']} {c['confidence']:.2f}", color)
-                cond = c.get("condition")
-                if cond:
-                    _draw_box(out["conditions"], box, f"{cond['class']} {cond['confidence']:.2f}", C_COND)
-                    _draw_box(out["all"], box, f"{c['class']} | {cond['class']} {cond['confidence']:.2f}", color)
-                else:
-                    _draw_box(out["all"], box, f"{c['class']} {c['confidence']:.2f}", color)
+        for c in pole.get("components", []):
+            box = c["box_full"]
+            _draw_box(out["components"], box, f"{c['class']} {c['confidence']:.2f}", C_COMP)
+            cond = c.get("condition")
+            if cond:
+                _draw_box(out["conditions"], box, f"{cond['class']} {cond['confidence']:.2f}", C_COND)
+                _draw_box(out["all"], box, f"{c['class']} | {cond['class']} {cond['confidence']:.2f}", C_COMP)
+            else:
+                _draw_box(out["all"], box, f"{c['class']} {c['confidence']:.2f}", C_COMP)
     return out
 
 
