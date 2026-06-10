@@ -16,12 +16,18 @@ uv pip install -e ".[app]"        # fastapi + uvicorn + python-multipart
 
 ## Run
 
-Point `DRONISIGHT_WEIGHTS` at the folder holding your trained `runs/` (best.pt is auto-discovered by
-subset name — pole + 5 comp_* + 6 cond_*):
+By default the app auto-finds weights in `models/` (then `runs/`, then `~/Downloads/runs`) — so with
+the trained set under `models/runs/<subset>/.../weights/best.pt` you just run:
 
 ```bash
-DRONISIGHT_WEIGHTS=runs python -m app.server
-# open http://127.0.0.1:8000
+python -m app.server          # auto-resolves to models/; open http://127.0.0.1:8000
+```
+
+Override the location explicitly with `DRONISIGHT_WEIGHTS` (best.pt is auto-discovered by subset
+name — pole + 5 comp_* + 6 cond_*):
+
+```bash
+DRONISIGHT_WEIGHTS=/path/to/runs python -m app.server
 ```
 
 Env vars:

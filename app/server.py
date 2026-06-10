@@ -34,10 +34,11 @@ def _resolve_weights_dir():
     env = os.environ.get("DRONISIGHT_WEIGHTS")
     if env:
         return env
-    for c in ["runs", str(Path.home() / "Downloads" / "runs")]:
+    # in-repo `models/` is the default home for the trained set; fall back to other common spots
+    for c in ["models", "runs", str(Path.home() / "Downloads" / "runs")]:
         if list(Path(c).glob("**/pole/**/weights/*.pt")):
             return c
-    return "runs"
+    return "models"
 
 
 WEIGHTS_DIR = _resolve_weights_dir()
