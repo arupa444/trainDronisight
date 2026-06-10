@@ -178,6 +178,41 @@ def test_discover_weights_by_subset_name(tmp_path):
     assert "comp_wire" not in found                       # absent -> not in dict
 
 
+def test_filtered_detector_keeps_only_allowed():
+    from inference.backends import FilteredDetector
+
+    class _Multi:
+        def predict(self, image):
+            return [Detection("vegetation", 0.7, (0, 0, 1, 1)),
+                    Detection("rust", 0.6, (0, 0, 1, 1)),
+                    Detection("top_crossarm", 0.9, (0, 0, 1, 1))]
+
+    fd = FilteredDetector(_Multi(), {"vegetation"})
+    assert [d.class_name for d in fd.predict(None)] == ["vegetation"]   # other classes dropped
+
+
+def test_build_component_detector_applies_override(monkeypatch):
+    import inference.pipeline as P
+    from shared import config
+    from inference.backends import FilteredDetector
+    monkeypatch.setattr(config, "COMPONENT_WEIGHTS_OVERRIDE",
+                        {"comp_vegetation": {"weights_subset": "component_below_1000_crop", "keep": ["vegetation"]}})
+    monkeypatch.setattr(P, "discover_weights",
+                        lambda wd, subs: {"component_below_1000_crop": "below.pt"}
+                        if "component_below_1000_crop" in subs else {})
+    monkeypatch.setattr(P, "build_detector", lambda backend, w, conf, imgsz, names, **k: ("DET", w))
+
+    # overridden slot -> FilteredDetector over the OVERRIDE weights, keeping only vegetation
+    veg = P.build_component_detector("comp_vegetation", "models", {"comp_vegetation": "veg.pt"}, "yolo", 0.25, 1280)
+    assert isinstance(veg, FilteredDetector) and veg.keep == {"vegetation"}
+    assert veg.inner == ("DET", "below.pt")          # below_1000 weights, NOT the solo veg.pt
+    # non-overridden slot -> plain detector on its own weights
+    assert P.build_component_detector("comp_wire", "models", {"comp_wire": "wire.pt"}, "yolo", 0.25, 1280) == ("DET", "wire.pt")
+    # override weights absent -> fall back to the slot's own weights
+    monkeypatch.setattr(P, "discover_weights", lambda wd, subs: {})
+    assert P.build_component_detector("comp_vegetation", "models", {"comp_vegetation": "veg.pt"}, "yolo", 0.25, 1280) == ("DET", "veg.pt")
+
+
 def test_run_basename_file_and_dir(tmp_path):
     from inference.pipeline import run_basename
     assert run_basename("some/path/DJI_0070_D.JPG") == "DJI_0070_D_inference"   # file -> stem

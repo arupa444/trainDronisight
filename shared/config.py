@@ -49,6 +49,16 @@ COMP_SUBSETS = ["comp_wire", "comp_insulator", "comp_crossarm", "comp_vegetation
 COMPONENT_CLASSES = (COMP_WIRE_CLASSES + COMP_INSULATOR_CLASSES + COMP_CROSSARM_CLASSES
                      + COMP_VEGETATION_CLASSES + COMP_RUST_CLASSES)   # the 8 types (union, for reference)
 
+# A component slot may be served by a DIFFERENT detector, filtered to only the listed classes.
+# The solo comp_vegetation single-class model over-fires (no competing class to lose detections to,
+# so it labels poles/crossarms as vegetation). The older component_below_1000 detector learned
+# vegetation AGAINST top_crossarm/om_crossarm/rust, so it discriminates better -> use it but KEEP
+# ONLY vegetation (the other 3 classes are owned by comp_crossarm / comp_rust and must not leak in).
+# Falls back to the slot's own weights if the override weights aren't found.
+COMPONENT_WEIGHTS_OVERRIDE = {
+    "comp_vegetation": {"weights_subset": "component_below_1000_crop", "keep": ["vegetation"]},
+}
+
 # Condition specialists, one per base component family (om_crossarm_band added per the data).
 COND_V_INSULATOR_CLASSES       = ["v_insulator_normal", "v_insulator_band", "v_insulator_broken", "v_insulator_chip_off"]
 COND_H_INSULATOR_CLASSES       = ["h_insulator_normal", "h_insulator_broken", "h_insulator_chip_off"]

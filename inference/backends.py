@@ -28,6 +28,19 @@ class Detector(Protocol):
     def predict(self, image) -> list: ...
 
 
+class FilteredDetector:
+    """Wrap a Detector and keep only detections whose class_name is in `keep`. Lets us reuse a
+    multi-class detector for a single class (e.g. the below_1000 detector's `vegetation`) without
+    its other classes leaking into the pipeline."""
+
+    def __init__(self, inner, keep):
+        self.inner = inner
+        self.keep = set(keep)
+
+    def predict(self, image) -> list:
+        return [d for d in self.inner.predict(image) if d.class_name in self.keep]
+
+
 class YoloDetector:
     """Wraps an Ultralytics model behind the Detector interface.
 

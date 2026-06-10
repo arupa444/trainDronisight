@@ -204,11 +204,15 @@ function renderReport(r) {
       const meta = el("div", "comp-meta");
       const cc = el("div", "cc"); cc.appendChild(el("span", null, c.class));
       cc.appendChild(el("span", "conf", c.confidence)); meta.appendChild(cc);
-      if (c.condition) {
-        meta.appendChild(el("div", "badge " + (c.condition.defect ? "bad" : "ok"),
-          `${c.condition.class} ${c.condition.confidence}`));
-      } else {
+      if (!c.has_condition_family) {
         meta.appendChild(el("div", "badge neutral", "no condition family"));
+      } else if (c.conditions && c.conditions.length) {
+        // multi-label: show every detected condition (e.g. broken AND chip_off), green=normal/red=defect
+        c.conditions.forEach((cond) =>
+          meta.appendChild(el("div", "badge " + (cond.defect ? "bad" : "ok"),
+            `${cond.class} ${cond.confidence}`)));
+      } else {
+        meta.appendChild(el("div", "badge neutral", "no condition detected"));
       }
       card.appendChild(meta);
       grid.appendChild(card);
@@ -224,10 +228,11 @@ function renderReport(r) {
     if (!pole.components.length) return;
     pole.components.forEach((c) => {
       const tr = el("tr");
+      const hasConds = c.conditions && c.conditions.length;
       const cells = [
         i++, pole.index, c.class, c.confidence,
-        c.condition ? c.condition.class : "—",
-        c.condition ? c.condition.confidence : "—",
+        hasConds ? c.conditions.map((x) => x.class).join(", ") : (c.has_condition_family ? "none" : "—"),
+        hasConds ? c.conditions.map((x) => x.confidence).join(", ") : "—",
         c.box_full.join(", "),
       ];
       cells.forEach((v) => tr.appendChild(el("td", null, String(v))));

@@ -82,8 +82,11 @@ def test_full_flow_upload_poll_report(client):
     assert comps["v_insulator"]["condition"]["class"] == "v_insulator_broken"
     assert comps["v_insulator"]["condition"]["defect"] is True
     assert comps["v_insulator"]["attention"] is True
+    assert comps["v_insulator"]["has_condition_family"] is True       # v_insulator HAS a family
+    assert comps["v_insulator"]["conditions"][0]["defect"] is True    # multi-label list carries defect flags
     # vegetation has no condition family but is itself an attention item
     assert comps["vegetation"]["condition"] is None
+    assert comps["vegetation"]["has_condition_family"] is False       # so the UI says 'no condition family' correctly
     assert comps["vegetation"]["attention"] is True
     # downloads point at the per-job files mount
     assert rep["downloads"]["csv"].startswith("/files/") and rep["downloads"]["csv"].endswith(".csv")

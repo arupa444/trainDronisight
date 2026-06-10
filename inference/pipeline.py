@@ -23,7 +23,7 @@ from pathlib import Path
 import cv2
 
 from shared import config
-from inference.backends import YoloDetector, RFDetrDetector, TorchvisionDetector
+from inference.backends import YoloDetector, RFDetrDetector, TorchvisionDetector, FilteredDetector
 from inference.geometry import crop_with_pad, shift_detection
 from data_prep.preprocess import load_oriented_bgr, clahe_image
 
@@ -59,6 +59,25 @@ def discover_weights(weights_dir, subsets):
         if cands:
             found[s] = str(cands[-1])
     return found
+
+
+def build_component_detector(subset, weights_dir, weights_map, backend, conf, imgsz, device=None):
+    """Build the component detector for `subset`, honoring config.COMPONENT_WEIGHTS_OVERRIDE: if an
+    override exists AND its weights are discoverable under weights_dir, use those weights wrapped in a
+    FilteredDetector that keeps only the override's classes (e.g. comp_vegetation -> the below_1000
+    detector, keep just `vegetation`). Otherwise use the slot's own weights. Returns a Detector, or
+    None if no usable weights were found."""
+    override = config.COMPONENT_WEIGHTS_OVERRIDE.get(subset)
+    if override:
+        ow = discover_weights(weights_dir, [override["weights_subset"]]).get(override["weights_subset"])
+        if ow:
+            inner = build_detector(backend, ow, conf, imgsz, config.SUBSET_CLASSES.get(subset, []),
+                                   device=device)
+            return FilteredDetector(inner, override["keep"])
+    w = weights_map.get(subset)
+    if w:
+        return build_detector(backend, w, conf, imgsz, config.SUBSET_CLASSES.get(subset, []), device=device)
+    return None
 
 
 def _save_crop(crop, crop_dir, name):
@@ -292,7 +311,9 @@ def main():
 
     pole_det = build_detector(a.backend, weights["pole"], a.pole_conf, a.pole_imgsz,
                               config.POLE_CLASSES, a.rfdetr_resolution, a.frcnn_min_size)
-    component_dets = [mk(s, a.comp_conf, a.comp_imgsz) for s in config.COMP_SUBSETS if s in weights]
+    component_dets = [d for d in (build_component_detector(s, a.weights_dir, weights, a.backend,
+                                                           a.comp_conf, a.comp_imgsz)
+                                  for s in config.COMP_SUBSETS) if d is not None]
     condition_dets = ({} if a.no_condition
                       else {s: mk(s, a.cond_conf, a.cond_imgsz) for s in config.COND_SUBSETS if s in weights})
 

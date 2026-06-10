@@ -9,8 +9,8 @@ from pathlib import Path
 
 from shared import config
 from shared.device import select_device
-from inference.pipeline import (discover_weights, build_detector, run_pipeline,
-                                result_to_rows, write_csv)
+from inference.pipeline import (discover_weights, build_detector, build_component_detector,
+                                run_pipeline, result_to_rows, write_csv)
 from inference.visualize import save_layers, LAYERS
 from data_prep.preprocess import load_oriented_bgr, clahe_image
 
@@ -74,11 +74,16 @@ class InspectionService:
         if progress:
             progress(f"Loading pole detector on {self.device.upper()}", 16)
         self.pole_det = _mk("pole", self.pole_conf, self.pole_imgsz)
-        present_comp = [s for s in config.COMP_SUBSETS if s in self.weights]
-        for i, s in enumerate(present_comp):
-            if progress:
-                progress(f"Loading component model {i+1}/{len(present_comp)} ({s})", 18 + i)
-            self.component_dets.append(_mk(s, self.comp_conf, self.comp_imgsz))
+        # component detectors honor COMPONENT_WEIGHTS_OVERRIDE (e.g. vegetation served by the
+        # below_1000 detector filtered to just `vegetation`); iterate ALL slots so an overridden
+        # slot loads even if its own solo weights are absent.
+        for i, s in enumerate(config.COMP_SUBSETS):
+            det = build_component_detector(s, self.weights_dir, self.weights, self.backend,
+                                           self.comp_conf, self.comp_imgsz, self.device)
+            if det is not None:
+                if progress:
+                    progress(f"Loading component model {s}", 18 + i)
+                self.component_dets.append(det)
         present_cond = [s for s in config.COND_SUBSETS if s in self.weights]
         for i, s in enumerate(present_cond):
             if progress:
@@ -146,24 +151,28 @@ class InspectionService:
                 n_components += 1
                 cls = c["class"]
                 class_counts[cls] = class_counts.get(cls, 0) + 1
-                cond = c.get("condition")
-                cond_obj = None
-                defect = cls in ATTENTION_COMPONENTS
-                if cond:
-                    condition_counts[cond["class"]] = condition_counts.get(cond["class"], 0) + 1
-                    cdef = _is_defect(cond["class"])
-                    defect = defect or cdef
-                    cond_obj = {"class": cond["class"], "confidence": round(float(cond["confidence"]), 3),
-                                "defect": cdef}
+                has_family = cls in config.COMPONENT_TO_CONDITION_MODEL
+                # multi-label: keep ALL in-family condition detections (an insulator can be both
+                # broken AND chip_off), each flagged normal/defect
+                conds = []
+                for x in c.get("conditions", []):
+                    xdef = _is_defect(x["class"])
+                    condition_counts[x["class"]] = condition_counts.get(x["class"], 0) + 1
+                    conds.append({"class": x["class"], "confidence": round(float(x["confidence"]), 3),
+                                  "defect": xdef})
+                any_defect = any(x["defect"] for x in conds)
+                defect = (cls in ATTENTION_COMPONENTS) or any_defect
+                best = c.get("condition")
+                cond_obj = ({"class": best["class"], "confidence": round(float(best["confidence"]), 3),
+                             "defect": _is_defect(best["class"])} if best else None)
                 comp = {"class": cls, "confidence": round(float(c["confidence"]), 3),
                         "box_full": c["box_full"], "crop_url": url(c.get("crop_path")),
-                        "condition": cond_obj,
-                        "conditions": [{"class": x["class"], "confidence": round(float(x["confidence"]), 3)}
-                                       for x in c.get("conditions", [])],
-                        "attention": defect}
+                        "has_condition_family": has_family,
+                        "condition": cond_obj, "conditions": conds, "attention": defect}
                 if defect:
+                    defect_names = [x["class"] for x in conds if x["defect"]]
                     attention_items.append({"pole": pi, "component": cls,
-                                            "condition": (cond["class"] if cond else None),
+                                            "condition": ", ".join(defect_names) or None,
                                             "crop_url": comp["crop_url"]})
                 comps_out.append(comp)
             poles_out.append({"index": pi,
