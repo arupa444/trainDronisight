@@ -104,12 +104,21 @@ COMPONENT_TO_CONDITIONS = {c: SUBSET_CLASSES[m] for c, m in COMPONENT_TO_CONDITI
 
 # Crop padding (single source of truth so BUILD scale == inference scale):
 POLE_CROP_PAD = 0.05        # `component` detector: crop to the pole box + this pad (== inference --pole-pad)
-CONDITION_CROP_PAD = 0.25   # `cond_*` specialists: crop to the component box + this pad (== inference --condition-pad)
+# `cond_*` specialists crop to the component box + this pad. Raised 0.25 -> 0.40 so the crop reaches
+# DOWN past the insulator head to the band/hinge (bands were being clipped out of the head-only crop).
+# CROP_ALIGN below uses this value, so the cond_* datasets must be REBUILT and the 6 condition models
+# RETRAINED at 0.40 for train==serve parity (existing weights were trained at 0.25).
+CONDITION_CROP_PAD = 0.40
 # Padding for the SAVED component crop / thumbnail (display + the crop_path in result.csv) so a thin
-# edge band isn't clipped from view. This is presentation only — the condition MODEL is always fed the
-# CONDITION_CROP_PAD (0.25) crop it was trained on, NOT this one (raising the model's pad past its
-# trained value would be a train/serve mismatch and hurt accuracy).
+# edge band isn't clipped from view. This is presentation only — the condition MODEL is fed the
+# CONDITION_CROP_PAD crop, NOT this one.
 COMPONENT_CROP_PAD = 0.05
+
+# Inference de-duplication thresholds:
+POLE_NMS_IOU = 0.5               # drop duplicate pole boxes on the same pole (keep highest confidence)
+COMPONENT_NMS_IOU = 0.55         # DIFFERENT-class overlap (wire crossing a crossarm) kept unless this high
+COMPONENT_SAME_CLASS_IOU = 0.45  # SAME-class component duplicates removed more aggressively
+CONDITION_OVERLAP_IOS = 0.5      # condition normal-vs-damage conflict, by intersection-over-smaller-box
 
 # How each subset is crop-aligned at BUILD time. A subset is crop-trained IFF it appears here.
 #   "anchor": crop to each anchor (pole) box + pad; keep in-subset boxes >= min_visible.

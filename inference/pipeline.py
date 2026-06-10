@@ -90,19 +90,21 @@ def _save_crop(crop, crop_dir, name):
     return str(path)
 
 
-def _classify_condition(comp_crop, condition_detector, component_class):
-    """Stage 3: run the ROUTED condition detector on ONE component crop, then keep only the condition
-    classes valid for this component's family (config.COMPONENT_TO_CONDITIONS) as a safety net. Returns
-    (best, all_valid):
-      * best = {"class","confidence"} highest-confidence in-family condition, or None
-      * all_valid = every in-family condition detection (sorted), or None if no family / no detector.
+def _classify_condition(comp_crop, condition_detector, component_class,
+                        condition_ios=config.CONDITION_OVERLAP_IOS):
+    """Stage 3: run the ROUTED condition detector on ONE component crop, keep only the in-family
+    condition classes (config.COMPONENT_TO_CONDITIONS), then resolve normal-vs-damage overlaps
+    (resolve_condition_overlaps). Returns (best, all_valid):
+      * best = {"class","confidence"} highest-confidence surviving condition, or None
+      * all_valid = every surviving in-family condition (sorted), or None if no family / no detector.
     Components with no condition family (vegetation, rust) -> (None, None)."""
     allowed = config.COMPONENT_TO_CONDITIONS.get(component_class)
     if condition_detector is None or allowed is None or comp_crop.size == 0:
         return None, None
     allowed = set(allowed)
-    dets = sorted((c for c in condition_detector.predict(comp_crop) if c.class_name in allowed),
-                  key=lambda c: c.confidence, reverse=True)
+    dets = [c for c in condition_detector.predict(comp_crop) if c.class_name in allowed]
+    dets = resolve_condition_overlaps(dets, condition_ios)            # normal vs damage conflict resolution
+    dets = sorted(dets, key=lambda c: c.confidence, reverse=True)
     all_valid = [{"class": c.class_name, "confidence": c.confidence,
                   "box_comp": [int(v) for v in c.box]} for c in dets]
     best = {"class": dets[0].class_name, "confidence": dets[0].confidence} if dets else None
@@ -121,24 +123,78 @@ def _iou_xyxy(a, b):
     return inter / (aa + ba - inter)
 
 
-def nms_components(items, iou_thresh):
-    """Class-agnostic greedy NMS so each PHYSICAL object yields ONE box. items: list of
-    (comp_det_in_crop_coords, full_det). Keeps the highest-confidence detection and drops any later
-    box whose full-frame IoU with a kept box is >= iou_thresh — this removes the same object detected
-    by TWO different component specialists (and intra-detector dupes). A high threshold keeps
-    genuinely co-located distinct objects (e.g. a wire crossing a crossarm)."""
+def _ios_xyxy(a, b):
+    """Intersection over the SMALLER box's area — catches containment (a small band box inside a
+    large normal box) that plain IoU misses."""
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+    if inter <= 0:
+        return 0.0
+    smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return inter / smaller if smaller > 0 else 0.0
+
+
+def nms_components(items, iou_thresh, same_class_iou=None):
+    """Class-AWARE greedy NMS so each PHYSICAL object yields ONE box. items: list of
+    (comp_det_in_crop_coords, full_det). Keeps the highest-confidence detection and drops a later box
+    if it overlaps a kept box by >= the relevant threshold: SAME class uses `same_class_iou` (lower ->
+    aggressively removes duplicates, e.g. two boxes on one insulator), DIFFERENT classes use the
+    higher `iou_thresh` (so a wire crossing a crossarm survives)."""
+    same_class_iou = iou_thresh if same_class_iou is None else same_class_iou
     items = sorted(items, key=lambda t: t[1].confidence, reverse=True)
     kept = []
     for it in items:
-        if all(_iou_xyxy(it[1].box, k[1].box) < iou_thresh for k in kept):
+        ok = True
+        for k in kept:
+            thr = same_class_iou if it[1].class_name == k[1].class_name else iou_thresh
+            if _iou_xyxy(it[1].box, k[1].box) >= thr:
+                ok = False
+                break
+        if ok:
             kept.append(it)
+    return kept
+
+
+def nms_detections(dets, iou_thresh):
+    """Greedy IoU NMS over a plain Detection list (used for the single-class pole stage): keep the
+    highest-confidence box, drop later boxes overlapping a kept one — removes duplicate poles."""
+    dets = sorted(dets, key=lambda d: d.confidence, reverse=True)
+    kept = []
+    for d in dets:
+        if all(_iou_xyxy(d.box, k.box) < iou_thresh for k in kept):
+            kept.append(d)
+    return kept
+
+
+def resolve_condition_overlaps(dets, ios_thresh):
+    """Resolve normal-vs-damage conflicts among a component's condition detections (Detection list,
+    crop coords). Greedy by confidence using intersection-over-smaller (so a small band box inside a
+    big normal box counts as overlapping). A box is DROPPED if it overlaps an already-kept box and
+    either (a) is the same class (duplicate), or (b) has the OPPOSITE normal/damage polarity. Net:
+      * normal wins (highest conf) -> overlapping damages dropped -> [normal]
+      * a damage wins -> the overlapping normal dropped, ALL overlapping damages kept (band + broken)."""
+    def is_normal(d):
+        return d.class_name.endswith("_normal")
+    kept = []
+    for d in sorted(dets, key=lambda d: d.confidence, reverse=True):
+        drop = False
+        for k in kept:
+            if _ios_xyxy(d.box, k.box) >= ios_thresh and (
+                    d.class_name == k.class_name or is_normal(d) != is_normal(k)):
+                drop = True
+                break
+        if not drop:
+            kept.append(d)
     return kept
 
 
 def run_pipeline(image, pole_detector, component_detectors, condition_detectors=None,
                  crop_dir=None, image_name="image.jpg", pole_pad=0.05, name_stem=None,
-                 nms_iou=0.55, condition_pad=config.CONDITION_CROP_PAD,
-                 component_pad=config.COMPONENT_CROP_PAD):
+                 nms_iou=config.COMPONENT_NMS_IOU, condition_pad=config.CONDITION_CROP_PAD,
+                 component_pad=config.COMPONENT_CROP_PAD, pole_nms_iou=config.POLE_NMS_IOU,
+                 same_class_iou=config.COMPONENT_SAME_CLASS_IOU,
+                 condition_ios=config.CONDITION_OVERLAP_IOS):
     """image: BGR ndarray. Returns the structured result dict.
       * component_detectors: an iterable of the component specialists; ALL run on the padded pole crop,
         their boxes are remapped to the full frame and de-duplicated with class-agnostic NMS (nms_iou;
@@ -150,14 +206,17 @@ def run_pipeline(image, pole_detector, component_detectors, condition_detectors=
     stem = name_stem or Path(image_name).stem
     condition_detectors = condition_detectors or {}
     result = {"image": image_name, "poles": []}
-    for pi, pole in enumerate(pole_detector.predict(image)):
+    poles = pole_detector.predict(image)
+    if pole_nms_iou and pole_nms_iou < 1.0:        # drop duplicate boxes on the same pole
+        poles = nms_detections(poles, pole_nms_iou)
+    for pi, pole in enumerate(poles):
         pole_crop, (ox, oy) = crop_with_pad(image, pole.box, pad_frac=pole_pad)
         pole_crop_path = _save_crop(pole_crop, crop_dir, f"{stem}_pole{pi}.jpg")
         # every component specialist on the pole crop -> remap to full frame -> cross-detector NMS
         combined = [(c, shift_detection(c, ox, oy))
                     for det in component_detectors for c in det.predict(pole_crop)]
         if nms_iou and nms_iou < 1.0:
-            combined = nms_components(combined, nms_iou)
+            combined = nms_components(combined, nms_iou, same_class_iou)
         comps_out = []
         for ci, (comp, full) in enumerate(combined):
             comp_crop, _ = crop_with_pad(image, full.box, pad_frac=component_pad)  # small pad, for the saved/display crop (band not clipped)
@@ -172,7 +231,7 @@ def run_pipeline(image, pole_detector, component_detectors, condition_detectors=
             # route this component to its condition specialist (None for vegetation/rust)
             model_name = config.COMPONENT_TO_CONDITION_MODEL.get(comp.class_name)
             cond_det = condition_detectors.get(model_name)
-            best, all_valid = _classify_condition(cond_crop, cond_det, comp.class_name)
+            best, all_valid = _classify_condition(cond_crop, cond_det, comp.class_name, condition_ios)
             if all_valid is not None:               # condition stage ran for this component family
                 entry["condition"] = best           # the in-family top condition (or None)
                 entry["conditions"] = all_valid       # all in-family condition detections
@@ -282,9 +341,15 @@ def main():
                     help="pole-stage confidence; low favors recall")
     ap.add_argument("--comp-conf", type=float, default=0.25, help="confidence for the component detectors")
     ap.add_argument("--cond-conf", type=float, default=0.25, help="confidence for the condition detectors")
-    ap.add_argument("--nms-iou", type=float, default=0.55,
-                    help="cross-detector NMS IoU: one box per physical object (lower = more aggressive de-dup)")
-    ap.add_argument("--no-nms", action="store_true", help="disable cross-detector de-duplication")
+    ap.add_argument("--nms-iou", type=float, default=config.COMPONENT_NMS_IOU,
+                    help="DIFFERENT-class component overlap IoU (wire crossing a crossarm kept unless above this)")
+    ap.add_argument("--same-class-iou", type=float, default=config.COMPONENT_SAME_CLASS_IOU,
+                    help="SAME-class component duplicate IoU (lower = drop duplicates more aggressively)")
+    ap.add_argument("--pole-nms-iou", type=float, default=config.POLE_NMS_IOU,
+                    help="pole duplicate IoU (two boxes on one pole -> keep highest confidence)")
+    ap.add_argument("--condition-ios", type=float, default=config.CONDITION_OVERLAP_IOS,
+                    help="condition normal-vs-damage overlap (intersection-over-smaller) to resolve conflicts")
+    ap.add_argument("--no-nms", action="store_true", help="disable ALL de-duplication (pole + component)")
     ap.add_argument("--pole-imgsz", type=int, default=640)     # match pole training
     ap.add_argument("--comp-imgsz", type=int, default=1280)    # match component training
     ap.add_argument("--cond-imgsz", type=int, default=1280)    # match condition training
@@ -337,7 +402,9 @@ def main():
         result = run_pipeline(image, pole_det, component_dets, condition_dets,
                               crop_dir=crop_dir, image_name=p.name, pole_pad=a.pole_pad,
                               name_stem=out_stem, nms_iou=(1.0 if a.no_nms else a.nms_iou),
-                              condition_pad=a.condition_pad, component_pad=a.component_pad)
+                              condition_pad=a.condition_pad, component_pad=a.component_pad,
+                              pole_nms_iou=(1.0 if a.no_nms else a.pole_nms_iou),
+                              same_class_iou=a.same_class_iou, condition_ios=a.condition_ios)
         results.append(result)
         rows.extend(result_to_rows(result))
         if not a.no_viz:

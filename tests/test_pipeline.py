@@ -178,6 +178,52 @@ def test_discover_weights_by_subset_name(tmp_path):
     assert "comp_wire" not in found                       # absent -> not in dict
 
 
+def test_nms_components_is_class_aware():
+    from inference.pipeline import nms_components
+    mk = lambda cls, conf, box: (Detection(cls, conf, box), Detection(cls, conf, box))
+    boxA, boxB = (0, 0, 100, 100), (18, 18, 118, 118)   # IoU ~= 0.506 (between 0.45 and 0.55)
+    # SAME class at IoU 0.506 >= same_class_iou(0.45) -> drop the lower-confidence duplicate
+    same = nms_components([mk("v_insulator", 0.9, boxA), mk("v_insulator", 0.7, boxB)], 0.55, 0.45)
+    assert len(same) == 1 and same[0][1].confidence == 0.9
+    # DIFFERENT classes at IoU 0.506 < cross-class(0.55) -> both kept (wire crossing a crossarm)
+    diff = nms_components([mk("wire", 0.9, boxA), mk("crossarm_stright", 0.7, boxB)], 0.55, 0.45)
+    assert len(diff) == 2
+
+
+def test_nms_detections_dedups_poles():
+    from inference.pipeline import nms_detections
+    poles = [Detection("pole", 0.9, (0, 0, 100, 300)), Detection("pole", 0.6, (10, 10, 110, 310))]
+    out = nms_detections(poles, 0.5)                     # heavy overlap -> one pole, the higher conf
+    assert len(out) == 1 and out[0].confidence == 0.9
+
+
+def test_run_pipeline_dedups_duplicate_poles(tmp_path):
+    img = np.zeros((400, 400, 3), np.uint8)
+    pole_det = _Fake([Detection("pole", 0.9, (10, 10, 110, 310)),
+                      Detection("pole", 0.6, (15, 12, 112, 308))])   # 2 boxes on ONE pole
+    out = run_pipeline(img, pole_det, [], crop_dir=tmp_path, image_name="x.jpg", pole_pad=0.0)
+    assert len(out["poles"]) == 1 and out["poles"][0]["confidence"] == 0.9
+
+
+def test_resolve_conditions_normal_wins_drops_damage():
+    # case 1: normal has the highest confidence -> keep normal, drop overlapping damage
+    from inference.pipeline import resolve_condition_overlaps
+    dets = [Detection("v_insulator_normal", 0.7, (0, 0, 100, 100)),
+            Detection("v_insulator_band", 0.4, (40, 40, 60, 60))]   # band sits INSIDE normal
+    out = resolve_condition_overlaps(dets, 0.5)
+    assert [d.class_name for d in out] == ["v_insulator_normal"]
+
+
+def test_resolve_conditions_damage_wins_keeps_all_damages():
+    # case 2: a damage beats normal -> drop the normal, KEEP all overlapping damages (band + broken)
+    from inference.pipeline import resolve_condition_overlaps
+    dets = [Detection("v_insulator_band", 0.8, (0, 0, 100, 100)),
+            Detection("v_insulator_normal", 0.7, (0, 0, 100, 100)),
+            Detection("v_insulator_broken", 0.6, (0, 0, 100, 100))]
+    out = sorted(d.class_name for d in resolve_condition_overlaps(dets, 0.5))
+    assert out == ["v_insulator_band", "v_insulator_broken"]
+
+
 def test_filtered_detector_keeps_only_allowed():
     from inference.backends import FilteredDetector
 
