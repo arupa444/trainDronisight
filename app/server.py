@@ -27,7 +27,20 @@ from fastapi.staticfiles import StaticFiles
 
 from app.inference_service import InspectionService
 
-WEIGHTS_DIR = os.environ.get("DRONISIGHT_WEIGHTS", "runs")
+def _resolve_weights_dir():
+    """Where to find the trained runs/. An explicit DRONISIGHT_WEIGHTS always wins; otherwise
+    auto-pick the first candidate that actually contains pole weights so the app 'just works'
+    pointing at the usual local copy (./runs or ~/Downloads/runs) with no env var."""
+    env = os.environ.get("DRONISIGHT_WEIGHTS")
+    if env:
+        return env
+    for c in ["runs", str(Path.home() / "Downloads" / "runs")]:
+        if list(Path(c).glob("**/pole/**/weights/*.pt")):
+            return c
+    return "runs"
+
+
+WEIGHTS_DIR = _resolve_weights_dir()
 RUNS_BASE = Path(os.environ.get("DRONISIGHT_APP_RUNS", "app_runs")).resolve()
 RUNS_BASE.mkdir(parents=True, exist_ok=True)
 STATIC_DIR = Path(__file__).parent / "static"
