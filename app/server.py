@@ -17,10 +17,11 @@ import shutil
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -31,7 +32,8 @@ RUNS_BASE = Path(os.environ.get("DRONISIGHT_APP_RUNS", "app_runs")).resolve()
 RUNS_BASE.mkdir(parents=True, exist_ok=True)
 STATIC_DIR = Path(__file__).parent / "static"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
-MAX_BYTES = 80 * 1024 * 1024  # 80 MB guard
+MAX_BYTES = int(os.environ.get("DRONISIGHT_MAX_BYTES", 80 * 1024 * 1024))  # 80 MB guard
+MAX_JOBS = int(os.environ.get("DRONISIGHT_MAX_JOBS", 50))  # retain only the N most-recent finished jobs
 
 # Built once; detectors load lazily on the first analysis and stay cached.
 service = InspectionService(WEIGHTS_DIR, RUNS_BASE)
@@ -39,7 +41,14 @@ executor = ThreadPoolExecutor(max_workers=1)   # serialize GPU/MPS work
 JOBS = {}
 LOCK = Lock()
 
-app = FastAPI(title="DroniSight Inspection")
+
+@asynccontextmanager
+async def lifespan(app):
+    yield
+    executor.shutdown(wait=False, cancel_futures=True)   # drain/reclaim worker on shutdown
+
+
+app = FastAPI(title="DroniSight Inspection", lifespan=lifespan)
 app.mount("/files", StaticFiles(directory=str(RUNS_BASE)), name="files")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -48,6 +57,21 @@ def _set(job_id, **kw):
     with LOCK:
         if job_id in JOBS:
             JOBS[job_id].update(**kw)
+
+
+def _evict_finished():
+    """Keep memory + disk bounded: drop the oldest FINISHED jobs (and their run dirs) beyond
+    MAX_JOBS. Never evicts a queued/running job. rmtree runs outside the lock (slow I/O)."""
+    to_remove = []
+    with LOCK:
+        finished = [jid for jid, j in JOBS.items() if j["status"] in ("done", "error")]
+        # JOBS is insertion-ordered -> `finished` is oldest-first
+        overflow = len(JOBS) - MAX_JOBS
+        for jid in finished[:max(0, overflow)]:
+            JOBS.pop(jid, None)
+            to_remove.append(jid)
+    for jid in to_remove:
+        shutil.rmtree(service.runs_dir / jid, ignore_errors=True)
 
 
 def _run_job(job_id, image_path):
@@ -79,29 +103,46 @@ def health():
 
 
 @app.post("/api/analyze")
-async def analyze(file: UploadFile = File(...)):
+async def analyze(request: Request, file: UploadFile = File(...)):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in IMG_EXTS:
         raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {sorted(IMG_EXTS)}")
     if not service.has_pole:
         raise HTTPException(503, f"No pole weights under {service.weights_dir}. "
                                  f"Set DRONISIGHT_WEIGHTS to your trained runs/ folder and restart.")
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Empty upload.")
-    if len(data) > MAX_BYTES:
-        raise HTTPException(413, f"File too large ({len(data)} bytes > {MAX_BYTES}).")
+    # cheap early reject on the declared size, then the authoritative streamed cap below
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > MAX_BYTES + (1 << 20):
+        raise HTTPException(413, f"File too large (> {MAX_BYTES} bytes).")
 
+    # stream in chunks so an oversized upload is aborted WITHOUT buffering it all in RAM first
     job_id = uuid.uuid4().hex[:12]
     run_dir = service.runs_dir / job_id
     run_dir.mkdir(parents=True, exist_ok=True)
     image_path = run_dir / f"upload{ext}"
-    image_path.write_bytes(data)
+    total = 0
+    try:
+        with open(image_path, "wb") as f:
+            while True:
+                chunk = await file.read(1 << 20)   # 1 MB
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_BYTES:
+                    raise HTTPException(413, f"File too large (> {MAX_BYTES} bytes).")
+                f.write(chunk)
+    except HTTPException:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise
+    if total == 0:
+        shutil.rmtree(run_dir, ignore_errors=True)
+        raise HTTPException(400, "Empty upload.")
 
     with LOCK:
         JOBS[job_id] = {"status": "queued", "stage": "Queued", "percent": 0,
                         "image_url": f"/files/{job_id}/{image_path.name}",
                         "filename": file.filename, "result": None, "error": None}
+    _evict_finished()
     executor.submit(_run_job, job_id, str(image_path))
     return {"job_id": job_id}
 

@@ -62,6 +62,10 @@ class InspectionService:
             raise RuntimeError(
                 f"No pole weights found under {self.weights_dir} "
                 f"(expected **/pole/**/weights/best.pt). Set DRONISIGHT_WEIGHTS to your runs/ folder.")
+        # reset accumulators so a retry after a partial load can't double-append detectors
+        self.pole_det = None
+        self.component_dets = []
+        self.condition_dets = {}
 
         def _mk(subset, conf, imgsz):
             return build_detector(self.backend, self.weights[subset], conf, imgsz,
@@ -135,7 +139,7 @@ class InspectionService:
         class_counts, condition_counts, attention_items = {}, {}, []
         poles_out = []
         n_components = 0
-        for pole in result["poles"]:
+        for pi, pole in enumerate(result["poles"]):
             comps_out = []
             for c in pole.get("components", []):
                 n_components += 1
@@ -157,11 +161,11 @@ class InspectionService:
                                        for x in c.get("conditions", [])],
                         "attention": defect}
                 if defect:
-                    attention_items.append({"pole": pole_index_of(result, pole), "component": cls,
+                    attention_items.append({"pole": pi, "component": cls,
                                             "condition": (cond["class"] if cond else None),
                                             "crop_url": comp["crop_url"]})
                 comps_out.append(comp)
-            poles_out.append({"index": pole_index_of(result, pole),
+            poles_out.append({"index": pi,
                               "confidence": round(float(pole["confidence"]), 3),
                               "box": pole["box"], "crop_url": url(pole.get("crop_path")),
                               "components": comps_out})
@@ -182,11 +186,3 @@ class InspectionService:
             "poles": poles_out,
             "downloads": {"csv": url(run_dir / "result.csv"), "json": url(run_dir / "result.json")},
         }
-
-
-def pole_index_of(result, pole):
-    """Stable index of `pole` within result['poles'] (poles aren't dicts with an index field)."""
-    for i, p in enumerate(result["poles"]):
-        if p is pole:
-            return i
-    return -1

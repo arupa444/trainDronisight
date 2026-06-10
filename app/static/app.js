@@ -12,6 +12,8 @@ const STAGES = [
 
 let selectedFile = null;
 let pollTimer = null;
+let previewURL = null;   // object URLs we must revoke to avoid leaking blobs
+let thumbURL = null;
 
 function showView(id) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
@@ -45,9 +47,10 @@ async function loadHealth() {
 function setFile(file) {
   if (!file) return;
   selectedFile = file;
-  const url = URL.createObjectURL(file);
+  if (previewURL) URL.revokeObjectURL(previewURL);
+  previewURL = URL.createObjectURL(file);
   const prev = $("#dzPreview");
-  prev.src = url; prev.hidden = false;
+  prev.src = previewURL; prev.hidden = false;
   $("#dropzone").querySelector(".dz-inner").style.display = "none";
   $("#analyzeBtn").disabled = false;
   $("#clearBtn").hidden = false;
@@ -56,6 +59,7 @@ function setFile(file) {
 function clearFile() {
   selectedFile = null;
   $("#fileInput").value = "";
+  if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
   $("#dzPreview").hidden = true;
   $("#dropzone").querySelector(".dz-inner").style.display = "";
   $("#analyzeBtn").disabled = true;
@@ -79,7 +83,9 @@ function wireUpload() {
 /* ---------- analysis + polling ---------- */
 async function startAnalysis() {
   if (!selectedFile) return;
-  $("#loadingThumb").src = URL.createObjectURL(selectedFile);
+  if (thumbURL) URL.revokeObjectURL(thumbURL);
+  thumbURL = URL.createObjectURL(selectedFile);
+  $("#loadingThumb").src = thumbURL;
   renderStageList(0);
   $("#loadingStage").textContent = "Uploading…";
   setProgress(0);

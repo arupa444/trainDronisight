@@ -96,3 +96,29 @@ def test_rejects_non_image(client):
 
 def test_unknown_job_404(client):
     assert client.get("/api/jobs/deadbeef").status_code == 404
+
+
+def test_rejects_oversized_upload(client, monkeypatch):
+    from app import server as srv
+    monkeypatch.setattr(srv, "MAX_BYTES", 10)        # tiny cap; the streamed read must abort
+    r = client.post("/api/analyze", files={"file": ("big.png", _png_bytes(), "image/png")})
+    assert r.status_code == 413
+
+
+def test_finished_jobs_are_evicted(client, monkeypatch):
+    from app import server as srv
+    monkeypatch.setattr(srv, "MAX_JOBS", 2)          # retain only the 2 most-recent finished jobs
+    ids = []
+    for _ in range(4):
+        jid = client.post("/api/analyze",
+                          files={"file": ("f.png", _png_bytes(), "image/png")}).json()["job_id"]
+        ids.append(jid)
+        for _ in range(100):                          # wait for completion before the next submit
+            if client.get(f"/api/jobs/{jid}").json()["status"] in ("done", "error"):
+                break
+            time.sleep(0.03)
+    with srv.LOCK:
+        remaining = set(srv.JOBS)
+    assert ids[-1] in remaining and ids[-2] in remaining        # newest kept
+    assert ids[0] not in remaining and ids[1] not in remaining  # oldest evicted
+    assert not (srv.service.runs_dir / ids[0]).exists()         # and its run dir deleted
