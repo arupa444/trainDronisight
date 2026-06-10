@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DroniSight · Pole Inspection</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◈</span>
+      <div>
+        <div class="brand-name">DroniSight</div>
+        <div class="brand-sub">Electric-pole inspection · 12-model pipeline</div>
+      </div>
+    </div>
+    <div class="device-badge" id="deviceBadge" title="Inference device (CUDA → MPS → CPU)">
+      <span class="dot"></span><span id="deviceText">…</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ VIEW 1: UPLOAD ============ -->
+    <section class="view active" id="view-upload">
+      <div class="hero">
+        <h1>Inspect a pole image</h1>
+        <p class="muted">Upload a DJI frame. It runs through pole → 5 component detectors → 6 condition
+          specialists, then shows the annotated frame, the padded crops, and a structured report.</p>
+      </div>
+
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" accept="image/*" hidden />
+        <div class="dz-inner">
+          <div class="dz-icon">⬆</div>
+          <div class="dz-title">Drop an image here, or <span class="link">browse</span></div>
+          <div class="dz-sub muted">JPG / PNG · up to 80 MB</div>
+        </div>
+        <img id="dzPreview" class="dz-preview" alt="" hidden />
+      </label>
+
+      <div class="row">
+        <button class="btn primary" id="analyzeBtn" disabled>Analyse</button>
+        <button class="btn ghost" id="clearBtn" hidden>Clear</button>
+      </div>
+
+      <div class="models-card" id="modelsCard" hidden>
+        <div class="models-head">Loaded specialists</div>
+        <div class="models-grid" id="modelsGrid"></div>
+      </div>
+      <div class="banner error" id="uploadError" hidden></div>
+    </section>
+
+    <!-- ============ VIEW 2: ANALYSING ============ -->
+    <section class="view" id="view-loading">
+      <div class="loading-wrap">
+        <div class="scanner">
+          <img id="loadingThumb" alt="" />
+          <div class="scanline"></div>
+        </div>
+        <h2 id="loadingStage">Analysing…</h2>
+        <div class="progress"><div class="bar" id="progressBar"></div></div>
+        <div class="pct muted"><span id="progressPct">0</span>%</div>
+        <ul class="stage-list" id="stageList"></ul>
+      </div>
+    </section>
+
+    <!-- ============ VIEW 3: REPORT ============ -->
+    <section class="view" id="view-report">
+      <div class="report-head">
+        <div>
+          <h1 id="repTitle">Inspection report</h1>
+          <div class="muted" id="repMeta"></div>
+        </div>
+        <div class="report-actions">
+          <a class="btn ghost" id="dlCsv" href="#" download>Download CSV</a>
+          <a class="btn ghost" id="dlJson" href="#" download>Download JSON</a>
+          <button class="btn primary" id="againBtn">Analyse another</button>
+        </div>
+      </div>
+
+      <div class="summary-chips" id="summaryChips"></div>
+
+      <div class="report-grid">
+        <div class="panel viz-panel">
+          <div class="panel-head">
+            <span>Annotated frame</span>
+            <div class="tabs" id="layerTabs"></div>
+          </div>
+          <div class="viz-stage"><img id="vizImg" alt="annotated frame" /></div>
+        </div>
+
+        <div class="panel attention-panel">
+          <div class="panel-head">Attention items</div>
+          <div id="attentionList" class="attention-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">Detected components &amp; conditions</div>
+        <div id="polesContainer"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">Structured report</div>
+        <div class="table-wrap">
+          <table id="reportTable">
+            <thead>
+              <tr><th>#</th><th>Pole</th><th>Component</th><th>Conf.</th>
+                  <th>Condition</th><th>Cond. conf.</th><th>Box (full frame)</th><th>Status</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

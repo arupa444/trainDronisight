@@ -1,0 +1,192 @@
+"""Inference service for the web app: loads the 12-model set ONCE (cached), runs one image through
+the full pipeline, and turns the result into a URL-bearing structured report for the frontend.
+
+Reuses inference/pipeline.py verbatim so the app and the CLI can never drift. Device follows
+CUDA -> MPS -> CPU (shared.device.select_device), threaded into every detector.
+"""
+import json
+from pathlib import Path
+
+from shared import config
+from shared.device import select_device
+from inference.pipeline import (discover_weights, build_detector, run_pipeline,
+                                result_to_rows, write_csv)
+from inference.visualize import save_layers, LAYERS
+from data_prep.preprocess import load_oriented_bgr, clahe_image
+
+
+def _is_defect(condition_class):
+    """A condition is a 'defect / attention' unless it is the family's *_normal class."""
+    return bool(condition_class) and not condition_class.endswith("_normal")
+
+
+# Component types that are themselves an attention finding regardless of any condition model.
+ATTENTION_COMPONENTS = {"vegetation", "rust"}
+
+
+class InspectionService:
+    """Holds the loaded detectors. Build once per process; call analyze() per image."""
+
+    def __init__(self, weights_dir, runs_dir, *, backend="yolo", use_clahe=True,
+                 pole_conf=0.12, comp_conf=0.25, cond_conf=0.25,
+                 pole_imgsz=640, comp_imgsz=1280, cond_imgsz=1280,
+                 nms_iou=0.55, device=None):
+        self.weights_dir = str(weights_dir)
+        self.runs_dir = Path(runs_dir)
+        self.backend = backend
+        self.use_clahe = use_clahe
+        self.pole_conf, self.comp_conf, self.cond_conf = pole_conf, comp_conf, cond_conf
+        self.pole_imgsz, self.comp_imgsz, self.cond_imgsz = pole_imgsz, comp_imgsz, cond_imgsz
+        self.nms_iou = nms_iou
+        self.device = device or select_device()
+        self.weights = discover_weights(self.weights_dir, config.SUBSETS)
+        self._loaded = False
+        self.pole_det = None
+        self.component_dets = []
+        self.condition_dets = {}
+
+    # ---- discovery / readiness -------------------------------------------------
+    @property
+    def has_pole(self):
+        return "pole" in self.weights
+
+    def weights_status(self):
+        """{subset: bool present} for every subset (drives the UI 'models' panel)."""
+        return {s: (s in self.weights) for s in config.SUBSETS}
+
+    # ---- model loading (cached) ------------------------------------------------
+    def load_models(self, progress=None):
+        if self._loaded:
+            return
+        if not self.has_pole:
+            raise RuntimeError(
+                f"No pole weights found under {self.weights_dir} "
+                f"(expected **/pole/**/weights/best.pt). Set DRONISIGHT_WEIGHTS to your runs/ folder.")
+
+        def _mk(subset, conf, imgsz):
+            return build_detector(self.backend, self.weights[subset], conf, imgsz,
+                                  config.SUBSET_CLASSES[subset], device=self.device)
+
+        if progress:
+            progress(f"Loading pole detector on {self.device.upper()}", 16)
+        self.pole_det = _mk("pole", self.pole_conf, self.pole_imgsz)
+        present_comp = [s for s in config.COMP_SUBSETS if s in self.weights]
+        for i, s in enumerate(present_comp):
+            if progress:
+                progress(f"Loading component model {i+1}/{len(present_comp)} ({s})", 18 + i)
+            self.component_dets.append(_mk(s, self.comp_conf, self.comp_imgsz))
+        present_cond = [s for s in config.COND_SUBSETS if s in self.weights]
+        for i, s in enumerate(present_cond):
+            if progress:
+                progress(f"Loading condition model {i+1}/{len(present_cond)} ({s})", 24 + i)
+            self.condition_dets[s] = _mk(s, self.cond_conf, self.cond_imgsz)
+        self._loaded = True
+
+    # ---- one image -------------------------------------------------------------
+    def analyze(self, image_path, run_dir, progress=None):
+        """Run the full pipeline on one image, write artifacts under run_dir, return the report dict.
+        progress(stage:str, percent:int) is called as work advances (drives the loading screen)."""
+        image_path = Path(image_path)
+        run_dir = Path(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"{image_path.stem}_inference"
+
+        if progress:
+            progress("Preparing image (EXIF orient + CLAHE)", 6)
+        oriented = load_oriented_bgr(str(image_path))
+        image = clahe_image(oriented) if self.use_clahe else oriented
+
+        self.load_models(progress)
+
+        if progress:
+            progress("Detecting poles, components & conditions", 45)
+        result = run_pipeline(image, self.pole_det, self.component_dets, self.condition_dets,
+                              crop_dir=str(run_dir / "crops"), image_name=image_path.name,
+                              pole_pad=config.POLE_CROP_PAD, name_stem=stem,
+                              nms_iou=self.nms_iou, condition_pad=config.CONDITION_CROP_PAD)
+
+        if progress:
+            progress("Rendering annotated views", 82)
+        # draw viz on the un-CLAHE'd frame (identical geometry, natural colors)
+        save_layers(oriented, result, str(run_dir / "viz"), stem)
+
+        rows = result_to_rows(result)
+        write_csv(rows, str(run_dir / "result.csv"))
+        (run_dir / "result.json").write_text(json.dumps(result, indent=2))
+
+        if progress:
+            progress("Building report", 94)
+        report = self.build_report(result, run_dir, stem)
+        if progress:
+            progress("Done", 100)
+        return report
+
+    # ---- result dict -> frontend report (URLs + summary + attention flags) ----
+    def build_report(self, result, run_dir, stem):
+        run_dir = Path(run_dir)
+
+        def url(path):
+            if not path:
+                return None
+            return "/files/" + str(Path(path).resolve().relative_to(self.runs_dir.resolve())).replace("\\", "/")
+
+        viz = {layer: url(run_dir / "viz" / layer / f"{stem}.jpg") for layer in LAYERS}
+
+        class_counts, condition_counts, attention_items = {}, {}, []
+        poles_out = []
+        n_components = 0
+        for pole in result["poles"]:
+            comps_out = []
+            for c in pole.get("components", []):
+                n_components += 1
+                cls = c["class"]
+                class_counts[cls] = class_counts.get(cls, 0) + 1
+                cond = c.get("condition")
+                cond_obj = None
+                defect = cls in ATTENTION_COMPONENTS
+                if cond:
+                    condition_counts[cond["class"]] = condition_counts.get(cond["class"], 0) + 1
+                    cdef = _is_defect(cond["class"])
+                    defect = defect or cdef
+                    cond_obj = {"class": cond["class"], "confidence": round(float(cond["confidence"]), 3),
+                                "defect": cdef}
+                comp = {"class": cls, "confidence": round(float(c["confidence"]), 3),
+                        "box_full": c["box_full"], "crop_url": url(c.get("crop_path")),
+                        "condition": cond_obj,
+                        "conditions": [{"class": x["class"], "confidence": round(float(x["confidence"]), 3)}
+                                       for x in c.get("conditions", [])],
+                        "attention": defect}
+                if defect:
+                    attention_items.append({"pole": pole_index_of(result, pole), "component": cls,
+                                            "condition": (cond["class"] if cond else None),
+                                            "crop_url": comp["crop_url"]})
+                comps_out.append(comp)
+            poles_out.append({"index": pole_index_of(result, pole),
+                              "confidence": round(float(pole["confidence"]), 3),
+                              "box": pole["box"], "crop_url": url(pole.get("crop_path")),
+                              "components": comps_out})
+
+        return {
+            "image": result["image"],
+            "device": self.device,
+            "layers": LAYERS,
+            "viz": viz,
+            "summary": {
+                "poles": len(result["poles"]),
+                "components": n_components,
+                "attention": len(attention_items),
+                "class_counts": class_counts,
+                "condition_counts": condition_counts,
+            },
+            "attention_items": attention_items,
+            "poles": poles_out,
+            "downloads": {"csv": url(run_dir / "result.csv"), "json": url(run_dir / "result.json")},
+        }
+
+
+def pole_index_of(result, pole):
+    """Stable index of `pole` within result['poles'] (poles aren't dicts with an index field)."""
+    for i, p in enumerate(result["poles"]):
+        if p is pole:
+            return i
+    return -1

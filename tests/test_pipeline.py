@@ -59,15 +59,15 @@ def test_build_detector_selects_backend(monkeypatch):
     import inference.pipeline as P
     calls = {}
 
-    def fake_yolo(w, conf, imgsz):
-        calls["yolo"] = (w, conf, imgsz)
+    def fake_yolo(w, conf, imgsz, device=None):
+        calls["yolo"] = (w, conf, imgsz, device)
         return "Y"
 
     def fake_rf(w, names, conf, resolution):
         calls["rfdetr"] = (w, names, conf, resolution)
         return "R"
 
-    def fake_frcnn(w, names, conf, min_size):
+    def fake_frcnn(w, names, conf, min_size, device=None):
         calls["frcnn"] = (w, names, conf, min_size)
         return "F"
 
@@ -75,7 +75,9 @@ def test_build_detector_selects_backend(monkeypatch):
     monkeypatch.setattr(P, "RFDetrDetector", fake_rf)
     monkeypatch.setattr(P, "TorchvisionDetector", fake_frcnn)
     assert P.build_detector("yolo", "y.pt", 0.25, 1280, ["wire"]) == "Y"
-    assert calls["yolo"] == ("y.pt", 0.25, 1280)
+    assert calls["yolo"] == ("y.pt", 0.25, 1280, None)
+    assert P.build_detector("yolo", "y.pt", 0.25, 1280, ["wire"], device="mps") == "Y"
+    assert calls["yolo"] == ("y.pt", 0.25, 1280, "mps")   # device threads through
     assert P.build_detector("rfdetr", "r.pth", 0.3, 1280, ["wire"], resolution=1008) == "R"
     assert calls["rfdetr"] == ("r.pth", ["wire"], 0.3, 1008)
     # frcnn must be served at the TRAINING min_size (default 2000), not torchvision's 800

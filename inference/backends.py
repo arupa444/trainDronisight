@@ -29,16 +29,23 @@ class Detector(Protocol):
 
 
 class YoloDetector:
-    """Wraps an Ultralytics model behind the Detector interface."""
+    """Wraps an Ultralytics model behind the Detector interface.
 
-    def __init__(self, weights, conf=0.25, imgsz=1280):
+    device follows the CUDA -> MPS -> CPU priority (shared.device.select_device). Ultralytics
+    auto-uses CUDA but defaults to CPU for predict otherwise, so we pass the resolved device
+    explicitly — this is what makes the model actually run on Apple-Silicon MPS."""
+
+    def __init__(self, weights, conf=0.25, imgsz=1280, device=None):
         from ultralytics import YOLO
+        from shared.device import select_device
         self.model = YOLO(weights)
         self.conf = conf
         self.imgsz = imgsz
+        self.device = device or select_device()
 
     def predict(self, image) -> list:
-        res = self.model.predict(image, imgsz=self.imgsz, conf=self.conf, verbose=False)[0]
+        res = self.model.predict(image, imgsz=self.imgsz, conf=self.conf,
+                                 device=self.device, verbose=False)[0]
         return parse_yolo_result(res)
 
 

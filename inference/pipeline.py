@@ -31,16 +31,18 @@ BACKENDS = ["yolo", "rfdetr", "frcnn"]
 IMG_EXTS = {".jpg", ".jpeg", ".png"}
 
 
-def build_detector(backend, weights, conf, imgsz, class_names, resolution=672, frcnn_min_size=2000):
+def build_detector(backend, weights, conf, imgsz, class_names, resolution=672, frcnn_min_size=2000,
+                   device=None):
     """Pick a detector backend for a pipeline stage. YOLO reads class names from the model;
     RF-DETR and Faster R-CNN need the explicit class_names (they return numeric class ids).
-    frcnn_min_size MUST match the Faster R-CNN training --min-size (default 2000) or small
-    objects are served at the wrong scale."""
+    `device` follows CUDA -> MPS -> CPU (shared.device.select_device when None). frcnn_min_size
+    MUST match the Faster R-CNN training --min-size (default 2000) or small objects are served
+    at the wrong scale."""
     if backend == "rfdetr":
         return RFDetrDetector(weights, class_names, conf=conf, resolution=resolution)
     if backend == "frcnn":
-        return TorchvisionDetector(weights, class_names, conf=conf, min_size=frcnn_min_size)
-    return YoloDetector(weights, conf=conf, imgsz=imgsz)
+        return TorchvisionDetector(weights, class_names, conf=conf, min_size=frcnn_min_size, device=device)
+    return YoloDetector(weights, conf=conf, imgsz=imgsz, device=device)
 
 
 def discover_weights(weights_dir, subsets):
