@@ -41,6 +41,21 @@ class FilteredDetector:
         return [d for d in self.inner.predict(image) if d.class_name in self.keep]
 
 
+class EnsembleDetector:
+    """Run several detectors on the same image and UNION their detections. Used to combine a condition
+    specialist with the old unified classifier so a defect fires if EITHER model sees it (recall up).
+    Same-class duplicates from the two models are collapsed downstream (resolve_condition_overlaps)."""
+
+    def __init__(self, detectors):
+        self.detectors = list(detectors)
+
+    def predict(self, image) -> list:
+        out = []
+        for d in self.detectors:
+            out.extend(d.predict(image))
+        return out
+
+
 class YoloDetector:
     """Wraps an Ultralytics model behind the Detector interface.
 

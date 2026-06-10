@@ -117,6 +117,21 @@ CONDITION_INFER_PAD = 0.40
 # isn't clipped from view. Presentation ONLY — the condition MODEL is fed the CONDITION_INFER_PAD crop.
 COMPONENT_CROP_PAD = 0.15
 
+# Condition ENSEMBLE — recover defects the family specialist misses (broken/chipped called 'normal').
+# Combine each family's specialist with the OLD unified 14-class classifier (component_classification_crop),
+# union their in-family detections, and gate the defect with a per-family confidence floor. Settings are
+# calibrated on the val study (scripts/condition_ensemble_study.py): recall vs false-alarm per family.
+#   specialist/unified: which model(s) to run; defect_conf: floor below which a DEFECT box is ignored.
+UNIFIED_CONDITION_SUBSET = "component_classification_crop"
+CONDITION_ENSEMBLE = {
+    "cond_v_insulator":       {"specialist": True,  "unified": True,  "defect_conf": 0.45},
+    "cond_h_insulator":       {"specialist": True,  "unified": True,  "defect_conf": 0.40},
+    "cond_straight_crossarm": {"specialist": False, "unified": True,  "defect_conf": 0.45},  # unified far better
+    "cond_top_crossarm":      {"specialist": True,  "unified": True,  "defect_conf": 0.45},
+    "cond_om_crossarm":       {"specialist": True,  "unified": False, "defect_conf": 0.25},  # data-limited
+    "cond_wire":              {"specialist": False, "unified": True,  "defect_conf": 0.45},  # unified far better
+}
+
 # Inference de-duplication thresholds:
 POLE_NMS_IOU = 0.5               # drop duplicate pole boxes on the same pole (keep highest confidence)
 COMPONENT_NMS_IOU = 0.55         # DIFFERENT-class overlap (wire crossing a crossarm) kept unless this high

@@ -23,7 +23,8 @@ from pathlib import Path
 import cv2
 
 from shared import config
-from inference.backends import YoloDetector, RFDetrDetector, TorchvisionDetector, FilteredDetector
+from inference.backends import (YoloDetector, RFDetrDetector, TorchvisionDetector,
+                                FilteredDetector, EnsembleDetector)
 from inference.geometry import crop_with_pad, shift_detection
 from data_prep.preprocess import load_oriented_bgr, clahe_image
 
@@ -80,6 +81,29 @@ def build_component_detector(subset, weights_dir, weights_map, backend, conf, im
     return None
 
 
+def build_condition_detector(subset, weights_dir, weights_map, backend, conf, imgsz, device=None):
+    """Build a cond_* family's condition detector per config.CONDITION_ENSEMBLE: combine the family
+    specialist and/or the OLD unified classifier (filtered to the family's classes). Returns a single
+    detector, a FilteredDetector, or an EnsembleDetector (union of both) — or None if no weights."""
+    plan = config.CONDITION_ENSEMBLE.get(subset, {"specialist": True, "unified": False})
+    fam_classes = set(config.SUBSET_CLASSES[subset])
+    parts = []
+    if plan.get("specialist") and subset in weights_map:
+        parts.append(build_detector(backend, weights_map[subset], conf, imgsz,
+                                    config.SUBSET_CLASSES[subset], device=device))
+    if plan.get("unified"):
+        uw = discover_weights(weights_dir, [config.UNIFIED_CONDITION_SUBSET]).get(config.UNIFIED_CONDITION_SUBSET)
+        if uw:
+            parts.append(FilteredDetector(build_detector(backend, uw, conf, imgsz, [], device=device),
+                                          fam_classes))
+    if not parts and subset in weights_map:                 # fallback: unified planned but missing
+        parts.append(build_detector(backend, weights_map[subset], conf, imgsz,
+                                    config.SUBSET_CLASSES[subset], device=device))
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else EnsembleDetector(parts)
+
+
 def _save_crop(crop, crop_dir, name):
     if crop_dir is None or crop.size == 0:
         return None
@@ -91,10 +115,11 @@ def _save_crop(crop, crop_dir, name):
 
 
 def _classify_condition(comp_crop, condition_detector, component_class,
-                        condition_ios=config.CONDITION_OVERLAP_IOS):
-    """Stage 3: run the ROUTED condition detector on ONE component crop, keep only the in-family
-    condition classes (config.COMPONENT_TO_CONDITIONS), then resolve normal-vs-damage overlaps
-    (resolve_condition_overlaps). Returns (best, all_valid):
+                        condition_ios=config.CONDITION_OVERLAP_IOS, defect_conf=0.25):
+    """Stage 3: run the ROUTED condition detector (specialist and/or unified ensemble) on ONE component
+    crop, keep only the in-family condition classes (config.COMPONENT_TO_CONDITIONS), drop DEFECT boxes
+    below the per-family `defect_conf` floor (weak false defects; normals keep the base conf), then
+    resolve normal-vs-damage overlaps (resolve_condition_overlaps). Returns (best, all_valid):
       * best = {"class","confidence"} highest-confidence surviving condition, or None
       * all_valid = every surviving in-family condition (sorted), or None if no family / no detector.
     Components with no condition family (vegetation, rust) -> (None, None)."""
@@ -102,7 +127,9 @@ def _classify_condition(comp_crop, condition_detector, component_class,
     if condition_detector is None or allowed is None or comp_crop.size == 0:
         return None, None
     allowed = set(allowed)
-    dets = [c for c in condition_detector.predict(comp_crop) if c.class_name in allowed]
+    dets = [c for c in condition_detector.predict(comp_crop)
+            if c.class_name in allowed
+            and (c.class_name.endswith("_normal") or c.confidence >= defect_conf)]
     dets = resolve_condition_overlaps(dets, condition_ios)            # normal vs damage conflict resolution
     dets = sorted(dets, key=lambda c: c.confidence, reverse=True)
     all_valid = [{"class": c.class_name, "confidence": c.confidence,
@@ -235,10 +262,12 @@ def run_pipeline(image, pole_detector, component_detectors, condition_detectors=
                 "box_full": [int(v) for v in full.box],
                 "crop_path": _save_crop(comp_crop, crop_dir, f"{stem}_pole{pi}_comp{ci}_{comp.class_name}.jpg"),
             }
-            # route this component to its condition specialist (None for vegetation/rust)
+            # route this component to its condition specialist/ensemble (None for vegetation/rust)
             model_name = config.COMPONENT_TO_CONDITION_MODEL.get(comp.class_name)
             cond_det = condition_detectors.get(model_name)
-            best, all_valid = _classify_condition(cond_crop, cond_det, comp.class_name, condition_ios)
+            defect_conf = config.CONDITION_ENSEMBLE.get(model_name, {}).get("defect_conf", 0.25)
+            best, all_valid = _classify_condition(cond_crop, cond_det, comp.class_name,
+                                                  condition_ios, defect_conf)
             if all_valid is not None:               # condition stage ran for this component family
                 entry["condition"] = best           # the in-family top condition (or None)
                 entry["conditions"] = all_valid       # all in-family condition detections
@@ -386,8 +415,12 @@ def main():
     component_dets = [d for d in (build_component_detector(s, a.weights_dir, weights, a.backend,
                                                            a.comp_conf, a.comp_imgsz)
                                   for s in config.COMP_SUBSETS) if d is not None]
-    condition_dets = ({} if a.no_condition
-                      else {s: mk(s, a.cond_conf, a.cond_imgsz) for s in config.COND_SUBSETS if s in weights})
+    condition_dets = {}
+    if not a.no_condition:
+        for s in config.COND_SUBSETS:
+            d = build_condition_detector(s, a.weights_dir, weights, a.backend, a.cond_conf, a.cond_imgsz)
+            if d is not None:
+                condition_dets[s] = d
 
     # Per-run output folder named after the input; never overwrites a previous run.
     run_dir = unique_run_dir(a.out_dir, a.image)

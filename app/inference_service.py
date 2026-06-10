@@ -10,7 +10,7 @@ from pathlib import Path
 from shared import config
 from shared.device import select_device
 from inference.pipeline import (discover_weights, build_detector, build_component_detector,
-                                run_pipeline, result_to_rows, write_csv)
+                                build_condition_detector, run_pipeline, result_to_rows, write_csv)
 from inference.visualize import save_layers, LAYERS
 from data_prep.preprocess import load_oriented_bgr, clahe_image
 
@@ -84,11 +84,14 @@ class InspectionService:
                 if progress:
                     progress(f"Loading component model {s}", 18 + i)
                 self.component_dets.append(det)
-        present_cond = [s for s in config.COND_SUBSETS if s in self.weights]
-        for i, s in enumerate(present_cond):
-            if progress:
-                progress(f"Loading condition model {i+1}/{len(present_cond)} ({s})", 24 + i)
-            self.condition_dets[s] = _mk(s, self.cond_conf, self.cond_imgsz)
+        # condition detectors are ensembles (specialist + old unified classifier) per CONDITION_ENSEMBLE
+        for i, s in enumerate(config.COND_SUBSETS):
+            det = build_condition_detector(s, self.weights_dir, self.weights, self.backend,
+                                           self.cond_conf, self.cond_imgsz, self.device)
+            if det is not None:
+                if progress:
+                    progress(f"Loading condition model {s}", 24 + i)
+                self.condition_dets[s] = det
         self._loaded = True
 
     # ---- one image -------------------------------------------------------------

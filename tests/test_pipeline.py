@@ -246,6 +246,53 @@ def test_filtered_detector_keeps_only_allowed():
     assert [d.class_name for d in fd.predict(None)] == ["vegetation"]   # other classes dropped
 
 
+def test_ensemble_detector_unions_predictions():
+    from inference.backends import EnsembleDetector
+
+    class _F:
+        def __init__(self, d): self.d = d
+        def predict(self, image): return self.d
+
+    e = EnsembleDetector([_F([Detection("v_insulator_normal", 0.5, (0, 0, 1, 1))]),
+                          _F([Detection("v_insulator_broken", 0.6, (0, 0, 1, 1))])])
+    assert sorted(d.class_name for d in e.predict(None)) == ["v_insulator_broken", "v_insulator_normal"]
+
+
+def test_build_condition_detector_ensemble(monkeypatch):
+    import inference.pipeline as P
+    from shared import config
+    from inference.backends import EnsembleDetector, FilteredDetector
+    monkeypatch.setattr(config, "CONDITION_ENSEMBLE", {
+        "cond_v_insulator": {"specialist": True, "unified": True, "defect_conf": 0.45},
+        "cond_wire": {"specialist": False, "unified": True, "defect_conf": 0.45}})
+    monkeypatch.setattr(config, "UNIFIED_CONDITION_SUBSET", "component_classification_crop")
+    monkeypatch.setattr(P, "discover_weights",
+                        lambda wd, subs: {"component_classification_crop": "uni.pt"}
+                        if "component_classification_crop" in subs else {})
+    monkeypatch.setattr(P, "build_detector", lambda backend, w, conf, imgsz, names, **k: ("DET", w))
+    # specialist + unified -> ensemble of two
+    d = P.build_condition_detector("cond_v_insulator", "models", {"cond_v_insulator": "spec.pt"}, "yolo", 0.25, 1280)
+    assert isinstance(d, EnsembleDetector) and len(d.detectors) == 2
+    # unified-only family with no specialist weights -> just the filtered unified
+    d2 = P.build_condition_detector("cond_wire", "models", {}, "yolo", 0.25, 1280)
+    assert isinstance(d2, FilteredDetector)
+
+
+def test_condition_defect_floor_filters_weak_defects(tmp_path):
+    # a defect BELOW the per-family floor is ignored -> normal shown; ABOVE the floor -> defect wins
+    import numpy as np
+    from inference.pipeline import _classify_condition
+    crop = np.zeros((20, 20, 3), np.uint8)
+    weak = _Fake([Detection("v_insulator_normal", 0.6, (0, 0, 10, 10)),
+                  Detection("v_insulator_band", 0.30, (0, 0, 8, 8))])     # 0.30 < 0.45 floor
+    best, allv = _classify_condition(crop, weak, "v_insulator", condition_ios=0.5, defect_conf=0.45)
+    assert [c["class"] for c in allv] == ["v_insulator_normal"]
+    strong = _Fake([Detection("v_insulator_normal", 0.6, (0, 0, 10, 10)),
+                    Detection("v_insulator_band", 0.50, (0, 0, 8, 8))])   # 0.50 >= floor
+    best, allv = _classify_condition(crop, strong, "v_insulator", condition_ios=0.5, defect_conf=0.45)
+    assert [c["class"] for c in allv] == ["v_insulator_band"]             # defect priority, normal dropped
+
+
 def test_build_component_detector_applies_override(monkeypatch):
     import inference.pipeline as P
     from shared import config
