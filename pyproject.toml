@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=1.26",
     "pillow>=10.2",
     "scikit-learn>=1.4",
+    "scikit-image>=0.22",  # thermal: LAB palette inversion + Otsu body-reference
     "pandas>=2.2",
     "pyyaml>=6.0",
     "lxml>=5.1",
@@ -29,7 +30,7 @@ dev = ["pytest>=8.0", "httpx>=0.27"]   # httpx powers fastapi's TestClient
 app = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
 
 [tool.setuptools]
-packages = ["shared", "data_prep", "train_yolo", "train_faster_rcnn", "train_rf_detr", "inference", "notebooks", "app"]
+packages = ["shared", "data_prep", "train_yolo", "train_faster_rcnn", "train_rf_detr", "inference", "notebooks", "app", "thermal", "thermal.data_prep"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
